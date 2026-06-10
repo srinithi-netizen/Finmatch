@@ -1,38 +1,136 @@
-import { Client, Databases, Query } from "appwrite";
+import { Client, Databases, Storage, ID, Query } from "appwrite";
 
 const client = new Client();
 
 client
-  .setEndpoint("https://cloud.appwrite.io/v1") // Appwrite cloud endpoint
-  .setProject("6a27fc2800189d6cffed"); // 🔁 Replace with your Project ID
+  .setEndpoint("https://cloud.appwrite.io/v1")
+  .setProject("6a27fc2800189d6cffed");
 
 export const databases = new Databases(client);
+export const storage   = new Storage(client);
 
-export const DB_ID = "6a27fe0f0008e45ab951";       // 🔁 Replace with your Database ID
-export const CPA_COLLECTION_ID = "cpa_users";    // 🔁 Replace
-export const CLIENTS_COLLECTION_ID = "clients";  // 🔁 Replace
-// ============ ADD TO EXISTING appwrite/config.js ============
-
-// 1. Add a new env var / constant for the validation errors collection
+// ─── Collection & Bucket IDs ──────────────────────────────────────────────────
+export const DB_ID                           = "6a27fe0f0008e45ab951";
+export const CPA_COLLECTION_ID               = "cpa_users";
+export const CLIENTS_COLLECTION_ID           = "clients";
+export const DOCUMENTS_COLLECTION_ID         = "uploaded_documents";
 export const VALIDATION_ERRORS_COLLECTION_ID = "upload_validation_errors";
-// Validation error collection in Appwrite console with these attributes:
-//   clientId       (string, required)
-//   fileName       (string, required)
-//   documentType   (string, required)
-//   rowNumber      (integer, required)
-//   severity       (string, required)        -> "error" | "warning"
-//   field          (string, required)
-//   message        (string, required, size 1000)
-//   rowData        (string, required, size 2000)
-//   acknowledged   (boolean, required, default false)
-//   uploadBatchId  (string, required)         -> groups errors from same upload
-//   $createdAt is automatic
+export const BUCKET_ID                       = "6a2903f8000fb8590cb1";
+export const BANK_TRANSACTIONS_COLLECTION_ID = "bank_transactions";
+export const INVOICES_COLLECTION_ID          = "invoices";
+export const PAYROLL_COLLECTION_ID           = "payroll_transactions";
+export const SALES_COLLECTION_ID             = "sale_records";
 
-/**
- * Logs validation errors for a file to the validation_errors collection.
- * Call this BEFORE or AFTER the file upload, regardless of whether
- * the CPA proceeds — so there's an audit trail.
- */
+// Re-export Appwrite helpers so other files only import from here
+export { ID, Query };
+// ─── Expense Records ──────────────────────────────────────────────────────────
+export const EXPENSE_COLLECTION_ID = "expense_records";
+
+export async function storeExpenseRecords(expenses) {
+  if (!expenses || expenses.length === 0) return { saved: 0, skipped: 0 };
+
+  const clientId = expenses[0].clientId;
+  const existingFingerprints = new Set();
+
+  try {
+    const existing = await databases.listDocuments(
+      DB_ID,
+      EXPENSE_COLLECTION_ID,
+      [Query.equal("clientId", clientId), Query.limit(5000)]
+    );
+    existing.documents.forEach((d) => existingFingerprints.add(d.fingerprint));
+  } catch (err) {
+    console.warn("storeExpenseRecords: could not fetch existing fingerprints:", err.message);
+  }
+
+  let saved = 0;
+  let skipped = 0;
+
+  for (const record of expenses) {
+    if (existingFingerprints.has(record.fingerprint)) {
+      skipped++;
+      continue;
+    }
+    try {
+      await databases.createDocument(DB_ID, EXPENSE_COLLECTION_ID, ID.unique(), record);
+      saved++;
+    } catch (err) {
+      console.error("storeExpenseRecords: failed row", record.expenseRowIndex, err.message);
+    }
+  }
+
+  return { saved, skipped };
+}
+
+export async function getExpenseRecords(clientId) {
+  const response = await databases.listDocuments(
+    DB_ID,
+    EXPENSE_COLLECTION_ID,
+    [Query.equal("clientId", clientId), Query.orderDesc("$createdAt"), Query.limit(1000)]
+  );
+  return response.documents;
+}
+
+// ─── Uploaded Documents ───────────────────────────────────────────────────────
+
+export async function uploadDocument({ file, clientId, documentType, fileHash, uploadBatchId }) {
+  const storageResponse = await storage.createFile(BUCKET_ID, ID.unique(), file);
+  const storageFileId   = storageResponse.$id;
+
+  const dbResponse = await databases.createDocument(
+    DB_ID,
+    DOCUMENTS_COLLECTION_ID,
+    ID.unique(),
+    {
+      clientId,
+      fileName:     file.name,
+      documentType,
+      fileHash,
+      uploadBatchId,
+      storageFileId,
+      logicalPath:  `${clientId}/${documentType}/${file.name}`,
+      uploadedAt:   new Date().toISOString(),
+    }
+  );
+
+  return {
+    storageFileId,
+    documentRecordId: dbResponse.$id,
+    logicalPath:      dbResponse.logicalPath,
+  };
+}
+
+export async function getUploadedDocuments(clientId) {
+  const response = await databases.listDocuments(
+    DB_ID,
+    DOCUMENTS_COLLECTION_ID,
+    [Query.equal("clientId", clientId), Query.orderDesc("$createdAt")]
+  );
+  return response.documents;
+}
+
+export async function deleteUploadedDocument(storageFileId, documentRecordId) {
+  await storage.deleteFile(BUCKET_ID, storageFileId);
+  await databases.deleteDocument(DB_ID, DOCUMENTS_COLLECTION_ID, documentRecordId);
+  return true;
+}
+
+export async function getExistingFileHashes(clientId) {
+  try {
+    const response = await databases.listDocuments(
+      DB_ID,
+      DOCUMENTS_COLLECTION_ID,
+      [Query.equal("clientId", clientId)]
+    );
+    return response.documents.map((doc) => doc.fileHash).filter(Boolean);
+  } catch (err) {
+    console.error("getExistingFileHashes failed:", err);
+    return [];
+  }
+}
+
+// ─── Validation Error Logging ─────────────────────────────────────────────────
+
 export async function logValidationErrors({
   clientId,
   fileName,
@@ -41,40 +139,218 @@ export async function logValidationErrors({
   acknowledged,
   uploadBatchId,
 }) {
+  if (!errors || errors.length === 0) return;
+
   const promises = errors.map((err) =>
     databases.createDocument(
-      DATABASE_ID,
+      DB_ID,
       VALIDATION_ERRORS_COLLECTION_ID,
       ID.unique(),
       {
         clientId,
         fileName,
         documentType,
-        rowNumber: err.rowNumber,
-        severity: err.severity,
-        field: err.field,
-        message: err.message,
-        rowData: err.rowData ? err.rowData.slice(0, 2000) : "",
+        rowNumber:    err.rowNumber ?? 0,
+        severity:     err.severity  ?? "error",
+        field:        err.field     ?? "",
+        message:      (err.message  ?? "").slice(0, 1000),
+        rowData:      (typeof err.rowData === "object"
+                        ? JSON.stringify(err.rowData)
+                        : (err.rowData ?? "")
+                      ).slice(0, 2000),
         acknowledged: !!acknowledged,
         uploadBatchId,
       }
     )
   );
 
-  return Promise.all(promises);
+  await Promise.all(promises);
 }
 
-/**
- * Fetch existing file hashes for duplicate detection across sessions.
- * Assumes you have a 'documents' or 'uploads' collection storing hash + clientId.
- */
-export async function getExistingFileHashes(clientId) {
-  // Adjust DOCUMENTS_COLLECTION_ID and field name to match your schema
-  const response = await databases.listDocuments(
-    DATABASE_ID,
-    DOCUMENTS_COLLECTION_ID,
-    [Query.equal("clientId", clientId)]
-  );
-  return response.documents.map((doc) => doc.fileHash).filter(Boolean);
+// ─── Bank Transactions ────────────────────────────────────────────────────────
+
+export async function storeBankTransactions(transactions) {
+  if (!transactions || transactions.length === 0) return { saved: 0, skipped: 0 };
+
+  const clientId = transactions[0].clientId;
+  const existingFingerprints = new Set();
+
+  try {
+    const existing = await databases.listDocuments(
+      DB_ID,
+      BANK_TRANSACTIONS_COLLECTION_ID,
+      [Query.equal("clientId", clientId), Query.limit(5000)]
+    );
+    existing.documents.forEach((d) => existingFingerprints.add(d.fingerprint));
+  } catch (err) {
+    console.warn("storeBankTransactions: could not fetch existing fingerprints:", err.message);
+  }
+
+  let saved = 0;
+  let skipped = 0;
+
+  for (const txn of transactions) {
+    if (existingFingerprints.has(txn.fingerprint)) {
+      skipped++;
+      continue;
+    }
+    try {
+      await databases.createDocument(DB_ID, BANK_TRANSACTIONS_COLLECTION_ID, ID.unique(), txn);
+      saved++;
+    } catch (err) {
+      console.error("storeBankTransactions: failed row", txn.bankRowIndex, err.message);
+    }
+  }
+
+  return { saved, skipped };
 }
-export { Query };
+
+export async function getBankTransactions(clientId) {
+  const response = await databases.listDocuments(
+    DB_ID,
+    BANK_TRANSACTIONS_COLLECTION_ID,
+    [Query.equal("clientId", clientId), Query.orderDesc("$createdAt"), Query.limit(1000)]
+  );
+  return response.documents;
+}
+
+// ─── Invoices ─────────────────────────────────────────────────────────────────
+
+export async function storeInvoices(invoices) {
+  if (!invoices || invoices.length === 0) return { saved: 0, skipped: 0 };
+
+  const clientId = invoices[0].clientId;
+  const existingFingerprints = new Set();
+
+  try {
+    const existing = await databases.listDocuments(
+      DB_ID,
+      INVOICES_COLLECTION_ID,
+      [Query.equal("clientId", clientId), Query.limit(5000)]
+    );
+    existing.documents.forEach((d) => existingFingerprints.add(d.fingerprint));
+  } catch (err) {
+    console.warn("storeInvoices: could not fetch existing fingerprints:", err.message);
+  }
+
+  let saved = 0;
+  let skipped = 0;
+
+  for (const inv of invoices) {
+    if (existingFingerprints.has(inv.fingerprint)) {
+      skipped++;
+      continue;
+    }
+    try {
+      await databases.createDocument(DB_ID, INVOICES_COLLECTION_ID, ID.unique(), inv);
+      saved++;
+    } catch (err) {
+      console.error("storeInvoices: failed row", inv.invoiceRowIndex, err.message);
+    }
+  }
+
+  return { saved, skipped };
+}
+
+export async function getInvoices(clientId) {
+  const response = await databases.listDocuments(
+    DB_ID,
+    INVOICES_COLLECTION_ID,
+    [Query.equal("clientId", clientId), Query.orderDesc("$createdAt"), Query.limit(1000)]
+  );
+  return response.documents;
+}
+
+// ─── Payroll Records ──────────────────────────────────────────────────────────
+
+export async function storePayrollRecords(payrollRecords) {
+  if (!payrollRecords || payrollRecords.length === 0) return { saved: 0, skipped: 0 };
+
+  const clientId = payrollRecords[0].clientId;
+  const existingFingerprints = new Set();
+
+  try {
+    const existing = await databases.listDocuments(
+      DB_ID,
+      PAYROLL_COLLECTION_ID,
+      [Query.equal("clientId", clientId), Query.limit(5000)]
+    );
+    existing.documents.forEach((d) => existingFingerprints.add(d.fingerprint));
+  } catch (err) {
+    console.warn("storePayrollRecords: could not fetch existing fingerprints:", err.message);
+  }
+
+  let saved = 0;
+  let skipped = 0;
+
+  for (const record of payrollRecords) {
+    if (existingFingerprints.has(record.fingerprint)) {
+      skipped++;
+      continue;
+    }
+    try {
+      await databases.createDocument(DB_ID, PAYROLL_COLLECTION_ID, ID.unique(), record);
+      saved++;
+    } catch (err) {
+      console.error("storePayrollRecords: failed row", record.payrollRowIndex, err.message);
+    }
+  }
+
+  return { saved, skipped };
+}
+
+export async function getPayrollRecords(clientId) {
+  const response = await databases.listDocuments(
+    DB_ID,
+    PAYROLL_COLLECTION_ID,
+    [Query.equal("clientId", clientId), Query.orderDesc("$createdAt"), Query.limit(1000)]
+  );
+  return response.documents;
+}
+
+// ─── Sale Records ─────────────────────────────────────────────────────────────
+
+export async function storeSaleRecords(saleRecords) {
+  if (!saleRecords || saleRecords.length === 0) return { saved: 0, skipped: 0 };
+
+  const clientId = saleRecords[0].clientId;
+  const existingFingerprints = new Set();
+
+  try {
+    const existing = await databases.listDocuments(
+      DB_ID,
+      SALES_COLLECTION_ID,
+      [Query.equal("clientId", clientId), Query.limit(5000)]
+    );
+    existing.documents.forEach((d) => existingFingerprints.add(d.fingerprint));
+  } catch (err) {
+    console.warn("storeSaleRecords: could not fetch existing fingerprints:", err.message);
+  }
+
+  let saved = 0;
+  let skipped = 0;
+
+  for (const record of saleRecords) {
+    if (existingFingerprints.has(record.fingerprint)) {
+      skipped++;
+      continue;
+    }
+    try {
+      await databases.createDocument(DB_ID, SALES_COLLECTION_ID, ID.unique(), record);
+      saved++;
+    } catch (err) {
+      console.error("storeSaleRecords: failed row", record.saleRowIndex, err.message);
+    }
+  }
+
+  return { saved, skipped };
+}
+
+export async function getSaleRecords(clientId) {
+  const response = await databases.listDocuments(
+    DB_ID,
+    SALES_COLLECTION_ID,
+    [Query.equal("clientId", clientId), Query.orderDesc("$createdAt"), Query.limit(1000)]
+  );
+  return response.documents;
+}

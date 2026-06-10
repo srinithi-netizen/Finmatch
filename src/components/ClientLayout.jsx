@@ -35,6 +35,11 @@ export default function ClientLayout({ client, children }) {
       icon: "📜",
       path: `/client-dashboard/${client.$id}/audit-history`,
     },
+{
+  name: "Chart of Accounts",
+  icon: "📒",
+  path: `/client-dashboard/${client.$id}/coa`,
+},
   ];
 
   return (

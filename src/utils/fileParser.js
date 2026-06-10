@@ -1,5 +1,6 @@
 import * as XLSX from "xlsx";
 import Papa from "papaparse";
+import { HEADER_ALIASES, normalizeHeader } from "./columnMapper";
 
 /**
  * Parses a File (CSV or XLSX) into { headers: string[], rows: object[] }
@@ -40,26 +41,71 @@ function parseCsv(file) {
   });
 }
 
+// Scores a candidate header row by counting how many cells match known aliases
+// In fileParser.js, update scoreHeaderRow to use the full alias list
+function scoreHeaderRow(rowArr) {
+  const allAliases = Object.values(HEADER_ALIASES).flat();
+  let score = 0;
+  for (const cell of rowArr) {
+    const normalized = normalizeHeader(String(cell));
+    if (normalized && allAliases.includes(normalized)) score++;
+  }
+  return score;
+}
+
 async function parseExcel(file) {
   const buffer = await file.arrayBuffer();
   const workbook = XLSX.read(buffer, { type: "array" });
-  const firstSheetName = workbook.SheetNames[0];
-  const sheet = workbook.Sheets[firstSheetName];
 
-  // Get raw 2D array first to extract headers
-  const rawRows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
-
-  if (rawRows.length === 0) {
-    return { headers: [], rows: [] };
+  if (workbook.SheetNames.length === 0) {
+    return { headers: [], rows: [], sheetName: null };
   }
 
-  const headers = rawRows[0].map((h) => String(h).trim());
+  // ── Score every sheet, pick the one with most recognized headers ──
+  let bestSheetName = workbook.SheetNames[0];
+  let bestScore = -1;
+  let bestHeaderRowIndex = 0;
+  let bestRawRows = [];
 
-  // Convert remaining rows to objects keyed by header
+  for (const sheetName of workbook.SheetNames) {
+    const sheet = workbook.Sheets[sheetName];
+    const rawRows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+
+    if (rawRows.length === 0) continue;
+
+    // Scan first 15 rows of this sheet for a header row
+    const scanLimit = Math.min(15, rawRows.length);
+    let sheetBestScore = -1;
+    let sheetBestHeaderIdx = 0;
+
+    for (let i = 0; i < scanLimit; i++) {
+      const score = scoreHeaderRow(rawRows[i]);
+      if (score > sheetBestScore) {
+        sheetBestScore = score;
+        sheetBestHeaderIdx = i;
+      }
+    }
+
+    if (sheetBestScore > bestScore) {
+      bestScore = sheetBestScore;
+      bestSheetName = sheetName;
+      bestHeaderRowIndex = sheetBestHeaderIdx;
+      bestRawRows = rawRows;
+    }
+  }
+
+  // ── Parse the best sheet from its detected header row ──
+  if (bestRawRows.length === 0) {
+    return { headers: [], rows: [], sheetName: bestSheetName };
+  }
+
+  const headers = bestRawRows[bestHeaderRowIndex]
+    .map((h) => String(h).trim())
+    .filter(Boolean);
+
   const rows = [];
-  for (let i = 1; i < rawRows.length; i++) {
-    const rowArr = rawRows[i];
-    // Skip fully empty rows
+  for (let i = bestHeaderRowIndex + 1; i < bestRawRows.length; i++) {
+    const rowArr = bestRawRows[i];
     if (rowArr.every((cell) => cell === "" || cell === null || cell === undefined)) {
       continue;
     }
@@ -70,5 +116,5 @@ async function parseExcel(file) {
     rows.push(rowObj);
   }
 
-  return { headers, rows };
+  return { headers, rows, sheetName: bestSheetName };
 }

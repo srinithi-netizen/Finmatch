@@ -1,0 +1,67 @@
+// coaSeedData.js
+export const DEFAULT_COA = [
+  // ── ASSETS ──
+  { code: "1000", name: "Assets", type: "asset", parent: null },
+  { code: "1100", name: "Current Assets", type: "asset", parent: "1000" },
+  { code: "1110", name: "Cash in Hand", type: "asset", parent: "1100" },
+  { code: "1120", name: "Bank Account", type: "asset", parent: "1100" },
+  { code: "1130", name: "Accounts Receivable", type: "asset", parent: "1100" },
+  { code: "1140", name: "Inventory", type: "asset", parent: "1100" },
+  { code: "1150", name: "Prepaid Expenses", type: "asset", parent: "1100" },
+  { code: "1160", name: "GST Input Credit", type: "asset", parent: "1100" },
+  { code: "1200", name: "Fixed Assets", type: "asset", parent: "1000" },
+  { code: "1210", name: "Furniture & Fixtures", type: "asset", parent: "1200" },
+  { code: "1220", name: "Computer & Equipment", type: "asset", parent: "1200" },
+  { code: "1230", name: "Vehicles", type: "asset", parent: "1200" },
+  { code: "1240", name: "Accumulated Depreciation", type: "asset", parent: "1200" },
+
+  // ── LIABILITIES ──
+  { code: "2000", name: "Liabilities", type: "liability", parent: null },
+  { code: "2100", name: "Current Liabilities", type: "liability", parent: "2000" },
+  { code: "2110", name: "Accounts Payable", type: "liability", parent: "2100" },
+  { code: "2120", name: "GST Output Payable", type: "liability", parent: "2100" },
+  { code: "2130", name: "TDS Payable", type: "liability", parent: "2100" },
+  { code: "2140", name: "Salary Payable", type: "liability", parent: "2100" },
+  { code: "2150", name: "Provident Fund Payable", type: "liability", parent: "2100" },
+  { code: "2160", name: "ESI Payable", type: "liability", parent: "2100" },
+  { code: "2200", name: "Long-Term Liabilities", type: "liability", parent: "2000" },
+  { code: "2210", name: "Bank Loan", type: "liability", parent: "2200" },
+  { code: "2220", name: "Vehicle Loan", type: "liability", parent: "2200" },
+
+  // ── EQUITY ──
+  { code: "3000", name: "Equity", type: "equity", parent: null },
+  { code: "3100", name: "Owner's Capital", type: "equity", parent: "3000" },
+  { code: "3200", name: "Retained Earnings", type: "equity", parent: "3000" },
+  { code: "3300", name: "Drawings", type: "equity", parent: "3000" },
+
+  // ── INCOME ──
+  { code: "4000", name: "Income", type: "income", parent: null },
+  { code: "4100", name: "Sales Revenue", type: "income", parent: "4000" },
+  { code: "4110", name: "Service Revenue", type: "income", parent: "4000" },
+  { code: "4200", name: "Other Income", type: "income", parent: "4000" },
+  { code: "4210", name: "Interest Income", type: "income", parent: "4200" },
+  { code: "4220", name: "Discount Received", type: "income", parent: "4200" },
+
+  // ── EXPENSES ──
+  { code: "5000", name: "Expenses", type: "expense", parent: null },
+  { code: "5100", name: "Cost of Goods Sold", type: "expense", parent: "5000" },
+  { code: "5200", name: "Operating Expenses", type: "expense", parent: "5000" },
+  { code: "5210", name: "Travel", type: "expense", parent: "5200" },
+  { code: "5220", name: "Meals", type: "expense", parent: "5200" },
+  { code: "5230", name: "Software", type: "expense", parent: "5200" },
+  { code: "5240", name: "Office Supplies", type: "expense", parent: "5200" },
+  { code: "5250", name: "Utilities", type: "expense", parent: "5200" },
+  { code: "5260", name: "Rent", type: "expense", parent: "5200" },
+  { code: "5270", name: "Marketing", type: "expense", parent: "5200" },
+  { code: "5280", name: "Professional Fees", type: "expense", parent: "5200" },
+  { code: "5290", name: "Internet", type: "expense", parent: "5200" },
+  { code: "5300", name: "Training", type: "expense", parent: "5200" },
+  { code: "5310", name: "Repairs & Maintenance", type: "expense", parent: "5200" },
+  { code: "5320", name: "Insurance", type: "expense", parent: "5200" },
+  { code: "5330", name: "Salaries & Wages", type: "expense", parent: "5200" },
+  { code: "5340", name: "Employer PF Contribution", type: "expense", parent: "5200" },
+  { code: "5350", name: "Employer ESI Contribution", type: "expense", parent: "5200" },
+  { code: "5360", name: "Bank Charges", type: "expense", parent: "5200" },
+  { code: "5370", name: "Depreciation", type: "expense", parent: "5200" },
+  { code: "5380", name: "Miscellaneous", type: "expense", parent: "5200" },
+];

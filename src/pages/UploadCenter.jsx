@@ -5,25 +5,34 @@ import ValidationResults from "../components/ValidationResults";
 import { validateFile } from "../utils/fileValidation";
 import { parseFileToRows } from "../utils/fileParser";
 import { validateRows, DOCUMENT_TYPES } from "../utils/rowValidation";
-import { logValidationErrors, DB_ID } from "../appwrite/config";
+import UploadedDocumentsList from "./UploadedDocumentsList";
+
+
+import {
+  logValidationErrors,
+  uploadDocument,
+  deleteUploadedDocument,
+  ID,
+} from "../appwrite/config";
 
 export default function UploadCenter() {
   const fileInputRef = useRef(null);
   const location = useLocation();
   const client = location.state?.client;
 
-  const [pendingFiles, setPendingFiles] = useState([]); // [{ file, hash, documentType }]
+  const [pendingFiles, setPendingFiles] = useState([]);
   const [fileLevelErrors, setFileLevelErrors] = useState([]);
-  const [validationResults, setValidationResults] = useState([]); // row-level results
+  const [validationResults, setValidationResults] = useState([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [stage, setStage] = useState("select"); // select | classify | validate | done
+  const [uploadSummary, setUploadSummary] = useState([]); // per-file upload results
 
   if (!client) return <div>Client not found</div>;
 
   const handleBrowse = () => fileInputRef.current?.click();
 
-  // ---- Step 1: File-level validation (existing logic) ----
+  // ── Step 1: File-level validation ────────────────────────────────────────────
   const processFiles = async (fileList) => {
     setIsProcessing(true);
     const newErrors = [];
@@ -49,7 +58,7 @@ export default function UploadCenter() {
     setPendingFiles((prev) => [...prev, ...newFiles]);
     setFileLevelErrors(newErrors);
     setIsProcessing(false);
-    setStage("classify");
+    if (newFiles.length > 0) setStage("classify");
   };
 
   const handleFileInputChange = (e) => {
@@ -75,7 +84,7 @@ export default function UploadCenter() {
     setIsDragging(false);
   };
 
-  // ---- Step 2: Document type classification (basic filename heuristic, CPA can override) ----
+  // ── Step 2: Document type classification ─────────────────────────────────────
   function guessDocumentType(filename) {
     const lower = filename.toLowerCase();
     if (lower.includes("payroll") || lower.includes("salary")) return "payroll";
@@ -84,7 +93,7 @@ export default function UploadCenter() {
     if (lower.includes("revenue")) return "revenue_report";
     if (lower.includes("expense")) return "expense_report";
     if (lower.includes("bank") || lower.includes("statement")) return "bank_statement";
-    return "bank_statement"; // default fallback
+    return "bank_statement";
   }
 
   const updateDocumentType = (hash, newType) => {
@@ -97,7 +106,7 @@ export default function UploadCenter() {
     setPendingFiles((prev) => prev.filter((f) => f.hash !== hash));
   };
 
-  // ---- Step 3: Row-level validation ----
+  // ── Step 3: Row-level validation ─────────────────────────────────────────────
   const runRowValidation = async () => {
     setIsProcessing(true);
     const results = [];
@@ -106,12 +115,12 @@ export default function UploadCenter() {
       const ext = pf.name.split(".").pop().toLowerCase();
 
       if (ext === "pdf") {
-        // PDFs skip row-level validation (no tabular structure)
         results.push({
           fileName: pf.name,
           documentType: pf.documentType,
           documentTypeLabel:
-            DOCUMENT_TYPES.find((d) => d.value === pf.documentType)?.label || pf.documentType,
+            DOCUMENT_TYPES.find((d) => d.value === pf.documentType)?.label ||
+            pf.documentType,
           errors: [],
           errorCount: 0,
           warningCount: 0,
@@ -124,12 +133,12 @@ export default function UploadCenter() {
       try {
         const parsed = await parseFileToRows(pf.file);
         const validation = validateRows(pf.documentType, parsed.rows);
-
         results.push({
           fileName: pf.name,
           documentType: pf.documentType,
           documentTypeLabel:
-            DOCUMENT_TYPES.find((d) => d.value === pf.documentType)?.label || pf.documentType,
+            DOCUMENT_TYPES.find((d) => d.value === pf.documentType)?.label ||
+            pf.documentType,
           ...validation,
         });
       } catch (err) {
@@ -137,7 +146,8 @@ export default function UploadCenter() {
           fileName: pf.name,
           documentType: pf.documentType,
           documentTypeLabel:
-            DOCUMENT_TYPES.find((d) => d.value === pf.documentType)?.label || pf.documentType,
+            DOCUMENT_TYPES.find((d) => d.value === pf.documentType)?.label ||
+            pf.documentType,
           errors: [
             {
               rowNumber: 0,
@@ -159,13 +169,15 @@ export default function UploadCenter() {
     setStage("validate");
   };
 
-  // ---- Step 4: CPA acknowledges errors -> log to Appwrite -> proceed to actual upload ----
+  // ── Step 4: Acknowledge → log errors → upload ────────────────────────────────
   const handleAcknowledge = async (acknowledgedMap) => {
     setIsProcessing(true);
-    const uploadBatchId = DB_ID.unique();
+
+    // ✅ FIX: ID.unique() — not DB_ID.unique()
+    const uploadBatchId = ID.unique();
 
     try {
-      // Log every file's errors (acknowledged or not, for audit trail)
+      // 4a. Log all row-level validation errors to Appwrite (audit trail)
       for (const result of validationResults) {
         if (result.errors.length > 0) {
           await logValidationErrors({
@@ -179,25 +191,73 @@ export default function UploadCenter() {
         }
       }
 
-      // TODO: proceed to actual Appwrite Storage upload here
-      // for (const pf of pendingFiles) {
-      //   await storage.createFile(BUCKET_ID, ID.unique(), pf.file);
-      //   // also create a 'documents' record with pf.hash, clientId, documentType, uploadBatchId
-      // }
+      // 4b. Upload each file to Appwrite Storage
+      const results = [];
+      for (const pf of pendingFiles) {
+        try {
+          const result = await uploadDocument({
+            file: pf.file,
+            clientId: client.$id || client.id,
+            documentType: pf.documentType,
+            fileHash: pf.hash,
+            uploadBatchId,
+          });
+results.push({
+  name: pf.name,
+  success: true,
 
-      setStage("done");
+  path: result.logicalPath,
+
+  storageFileId: result.storageFileId,
+  documentRecordId: result.documentRecordId,
+});        } catch (err) {
+          results.push({ name: pf.name, success: false, error: err.message });
+        }
+      }
+
+      setUploadSummary(results);
+      setStage("done"); // ✅ FIX: only called once (was duplicated before)
     } catch (err) {
-      console.error("Error logging validation results:", err);
-      alert("Failed to log validation errors. Please try again.");
+      console.error("Upload process failed:", err);
+      alert("Something went wrong during the upload. Please try again.");
     } finally {
       setIsProcessing(false);
     }
   };
 
+  const handleDeleteUpload = async (item) => {
+  const confirmed = window.confirm(
+    `Delete ${item.name}?`
+  );
+
+  if (!confirmed) return;
+
+  try {
+    await deleteUploadedDocument(
+      item.storageFileId,
+      item.documentRecordId
+    );
+
+    setUploadSummary((prev) =>
+      prev.filter(
+        (f) =>
+          f.documentRecordId !==
+          item.documentRecordId
+      )
+    );
+
+    alert("File deleted successfully");
+  } catch (err) {
+    console.error(err);
+    alert("Failed to delete file");
+  }
+};
+
   const resetAll = () => {
     setPendingFiles([]);
     setFileLevelErrors([]);
     setValidationResults([]);
+    setUploadSummary([]);
     setStage("select");
   };
 
@@ -206,16 +266,17 @@ export default function UploadCenter() {
     return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
   };
 
+  // ── Render ────────────────────────────────────────────────────────────────────
   return (
     <ClientLayout client={client}>
       <div style={styles.uploadCard}>
         <h2>Upload Financial Documents</h2>
         <p>
-          Upload bank statements, invoices, payroll reports, sales reports
-          and expense reports.
+          Upload bank statements, invoices, payroll reports, sales reports and
+          expense reports.
         </p>
 
-        {/* ---- Dropzone (always visible until done) ---- */}
+        {/* Dropzone */}
         {stage !== "done" && (
           <div
             style={{
@@ -245,19 +306,21 @@ export default function UploadCenter() {
           </div>
         )}
 
-        {/* ---- File-level errors ---- */}
+        {/* File-level errors */}
         {fileLevelErrors.length > 0 && (
           <div style={styles.errorBox}>
             <strong>⚠ Some files could not be added:</strong>
             <ul style={{ margin: "8px 0 0 0", paddingLeft: 20 }}>
               {fileLevelErrors.map((err, i) => (
-                <li key={i} style={{ color: "#B91C1C", fontSize: 14 }}>{err}</li>
+                <li key={i} style={{ color: "#B91C1C", fontSize: 14 }}>
+                  {err}
+                </li>
               ))}
             </ul>
           </div>
         )}
 
-        {/* ---- Step 2: Classify documents ---- */}
+        {/* Step 2: Classify */}
         {stage === "classify" && pendingFiles.length > 0 && (
           <div style={styles.fileListBox}>
             <h4>Confirm document type for each file</h4>
@@ -273,10 +336,15 @@ export default function UploadCenter() {
                   style={{ flex: 1.5 }}
                 >
                   {DOCUMENT_TYPES.map((dt) => (
-                    <option key={dt.value} value={dt.value}>{dt.label}</option>
+                    <option key={dt.value} value={dt.value}>
+                      {dt.label}
+                    </option>
                   ))}
                 </select>
-                <button style={styles.removeBtn} onClick={() => removeFile(pf.hash)}>
+                <button
+                  style={styles.removeBtn}
+                  onClick={() => removeFile(pf.hash)}
+                >
                   Remove
                 </button>
               </div>
@@ -291,7 +359,7 @@ export default function UploadCenter() {
           </div>
         )}
 
-        {/* ---- Step 3 & 4: Row validation results + acknowledgement ---- */}
+        {/* Step 3 & 4: Row validation results + acknowledgement */}
         {stage === "validate" && (
           <ValidationResults
             results={validationResults}
@@ -300,19 +368,68 @@ export default function UploadCenter() {
           />
         )}
 
-        {/* ---- Step 5: Done ---- */}
+        {/* Step 5: Done */}
         {stage === "done" && (
           <div style={styles.successBox}>
-            <h3>✅ Upload Processed</h3>
-            <p>
-              Validation results have been recorded. Files are queued for
-              storage upload.
+            <h3>✅ Upload Complete</h3>
+
+            {/* Per-file upload summary */}
+            {uploadSummary.length > 0 && (
+              <div style={styles.summaryList}>
+                {uploadSummary.map((r, i) => (
+                  <div
+                    key={i}
+                    style={{
+                      ...styles.summaryRow,
+                      color: r.success ? "#166534" : "#B91C1C",
+                    }}
+                  >
+                    <span>{r.success ? "✓" : "✗"}</span>
+                    <span style={{ flex: 1 }}>{r.name}</span>
+                    <div
+  style={{
+    display: "flex",
+    gap: "10px",
+    alignItems: "center",
+  }}
+>
+  <span style={{ fontSize: 12 }}>
+    {r.success ? r.path : `Failed: ${r.error}`}
+  </span>
+
+  {r.success && (
+    <button
+      onClick={() => handleDeleteUpload(r)}
+      style={{
+        background: "#EF4444",
+        color: "#fff",
+        border: "none",
+        padding: "4px 8px",
+        borderRadius: "4px",
+        cursor: "pointer",
+      }}
+    >
+      Delete
+    </button>
+  )}
+</div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <p style={{ color: "#475569", fontSize: 14 }}>
+              Validation results have been recorded for audit.
             </p>
             <button style={styles.uploadBtn} onClick={resetAll}>
               Upload More Files
             </button>
           </div>
         )}
+      </div>
+      <div>
+        <UploadedDocumentsList clientId={client.$id} />
+
       </div>
     </ClientLayout>
   );
@@ -376,6 +493,20 @@ const styles = {
     background: "#F0FDF4",
     border: "1px solid #BBF7D0",
     borderRadius: "8px",
-    textAlign: "center",
+  },
+  summaryList: {
+    marginBottom: "12px",
+    border: "1px solid #E2E8F0",
+    borderRadius: "6px",
+    overflow: "hidden",
+  },
+  summaryRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: "10px",
+    padding: "8px 12px",
+    borderBottom: "1px solid #F1F5F9",
+    fontSize: 13,
+    background: "#fff",
   },
 };

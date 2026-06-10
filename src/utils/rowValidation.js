@@ -276,24 +276,48 @@ function validateBankStatement(rows) {
 }
 
 function validateInvoices(rows) {
-  const fieldsNeeded = ["invoiceNumber", "invoiceDate", "vendorCustomer", "amount"];
   const errors = [];
   const seenInvoiceNumbers = new Map();
 
   if (rows.length === 0) {
-    return { errors: [{ rowNumber: 0, severity: "error", field: "file", message: "No data rows found in file.", rowData: "" }] };
+    return {
+      errors: [{ rowNumber: 0, severity: "error", field: "file", message: "No data rows found in file.", rowData: "" }],
+    };
   }
 
-  const fieldMap = mapHeaders(Object.keys(rows[0]), fieldsNeeded);
+  const headers = Object.keys(rows[0]);
 
+  // Try to find invoice number column
+  const invNumMap = mapHeaders(headers, ["invoiceNumber"]);
+  // Try to find a name column (vendor OR customer — either is fine for invoices)
+  const vendorMap = mapHeaders(headers, ["vendor"]);
+  const customerMap = mapHeaders(headers, ["customer"]);
+  const vendorCustomerMap = mapHeaders(headers, ["vendorCustomer"]);
+  // Try to find amount from multiple possible columns
+  const totalMap = mapHeaders(headers, ["totalAmount"]);
+  const amountMap = mapHeaders(headers, ["amount"]);
+  const dateMap = mapHeaders(headers, ["invoiceDate"]);
+
+  // Resolve which columns to actually use
+  const invNumCol = invNumMap.invoiceNumber;
+  const nameCol = vendorCustomerMap.vendorCustomer || customerMap.customer || vendorMap.vendor;
+  const amountCol = totalMap.totalAmount || amountMap.amount;
+  const dateCol = dateMap.invoiceDate;
+
+  // Report missing critical columns
   const missingHeaders = [];
-  if (!fieldMap.invoiceNumber) missingHeaders.push("Invoice Number");
-  if (!fieldMap.invoiceDate) missingHeaders.push("Invoice Date");
-  if (!fieldMap.vendorCustomer) missingHeaders.push("Vendor/Customer");
-  if (!fieldMap.amount) missingHeaders.push("Amount");
+  if (!invNumCol) missingHeaders.push("Invoice Number");
+  if (!nameCol)   missingHeaders.push("Vendor/Customer Name");
+  if (!amountCol) missingHeaders.push("Total Amount");
 
   if (missingHeaders.length > 0) {
-    errors.push({ rowNumber: 0, severity: "error", field: "headers", message: `Required column(s) not found: ${missingHeaders.join(", ")}.`, rowData: "" });
+    errors.push({
+      rowNumber: 0,
+      severity: "error",
+      field: "headers",
+      message: `Required column(s) not found: ${missingHeaders.join(", ")}.`,
+      rowData: `Available headers: ${headers.join(", ")}`,
+    });
     return { errors };
   }
 
@@ -301,47 +325,55 @@ function validateInvoices(rows) {
     const rowNumber = idx + 2;
     const rowData = rowToString(row);
 
-    const invNum = getField(row, fieldMap, "invoiceNumber");
-    const invDate = getField(row, fieldMap, "invoiceDate");
-    const vendor = getField(row, fieldMap, "vendorCustomer");
-    const amount = getField(row, fieldMap, "amount");
+    const invNum = row[invNumCol];
+    const invDate = dateCol ? row[dateCol] : null;
+    const nameVal = row[nameCol];
+    const amountVal = row[amountCol];
 
-    // Invoice Number required
+    // Invoice Number required + duplicate check
     if (isEmpty(invNum)) {
       errors.push({ rowNumber, severity: "error", field: "invoiceNumber", message: "Invoice Number is empty.", rowData });
     } else {
       const key = String(invNum).trim().toLowerCase();
       if (seenInvoiceNumbers.has(key)) {
-        errors.push({ rowNumber, severity: "error", field: "invoiceNumber", message: `Duplicate Invoice Number "${invNum}" (also on row ${seenInvoiceNumbers.get(key)}).`, rowData });
+        errors.push({
+          rowNumber,
+          severity: "error",
+          field: "invoiceNumber",
+          message: `Duplicate Invoice Number "${invNum}" (also on row ${seenInvoiceNumbers.get(key)}).`,
+          rowData,
+        });
       } else {
         seenInvoiceNumbers.set(key, rowNumber);
       }
     }
 
-    // Vendor/Customer required
-    if (isEmpty(vendor)) {
+    // Name (vendor or customer) required
+    if (isEmpty(nameVal)) {
       errors.push({ rowNumber, severity: "error", field: "vendorCustomer", message: "Vendor/Customer is empty.", rowData });
     }
 
-    // Date valid
-    if (isEmpty(invDate)) {
-      errors.push({ rowNumber, severity: "error", field: "invoiceDate", message: "Invoice Date is empty.", rowData });
-    } else {
-      const parsedDate = parseFlexibleDate(invDate);
-      if (!parsedDate) {
-        errors.push({ rowNumber, severity: "error", field: "invoiceDate", message: `Invalid date: "${invDate}".`, rowData });
-      } else if (isFutureDate(parsedDate)) {
-        errors.push({ rowNumber, severity: "warning", field: "invoiceDate", message: `Future invoice date: "${invDate}".`, rowData });
+    // Date valid (warn only if date column exists)
+    if (dateCol) {
+      if (isEmpty(invDate)) {
+        errors.push({ rowNumber, severity: "warning", field: "invoiceDate", message: "Invoice Date is empty.", rowData });
+      } else {
+        const parsedDate = parseFlexibleDate(invDate);
+        if (!parsedDate) {
+          errors.push({ rowNumber, severity: "error", field: "invoiceDate", message: `Invalid date: "${invDate}".`, rowData });
+        } else if (isFutureDate(parsedDate)) {
+          errors.push({ rowNumber, severity: "warning", field: "invoiceDate", message: `Future invoice date: "${invDate}".`, rowData });
+        }
       }
     }
 
     // Amount numeric & not negative
-    if (isEmpty(amount)) {
+    if (isEmpty(amountVal)) {
       errors.push({ rowNumber, severity: "error", field: "amount", message: "Amount is empty.", rowData });
     } else {
-      const num = parseAmount(amount);
+      const num = parseAmount(amountVal);
       if (num === null) {
-        errors.push({ rowNumber, severity: "error", field: "amount", message: `Amount is not numeric: "${amount}".`, rowData });
+        errors.push({ rowNumber, severity: "error", field: "amount", message: `Amount is not numeric: "${amountVal}".`, rowData });
       } else if (num < 0) {
         errors.push({ rowNumber, severity: "error", field: "amount", message: `Negative invoice amount: ${num}.`, rowData });
       }
