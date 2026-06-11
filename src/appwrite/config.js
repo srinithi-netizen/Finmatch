@@ -11,6 +11,7 @@ export const storage   = new Storage(client);
 
 // ─── Collection & Bucket IDs ──────────────────────────────────────────────────
 export const DB_ID                           = "6a27fe0f0008e45ab951";
+export const DATABASE_ID=DB_ID;
 export const CPA_COLLECTION_ID               = "cpa_users";
 export const CLIENTS_COLLECTION_ID           = "clients";
 export const DOCUMENTS_COLLECTION_ID         = "uploaded_documents";
@@ -23,6 +24,101 @@ export const SALES_COLLECTION_ID             = "sale_records";
 
 // Re-export Appwrite helpers so other files only import from here
 export { ID, Query };
+// ── NEW collection IDs (add these to your existing config.js) ─────────────────
+export const TRANSACTION_MATCH_COLLECTION_ID  = "transaction_match";
+export const CATEGORY_SUGGESTION_COLLECTION_ID = "category_suggestion";
+export const ANOMALY_FLAG_COLLECTION_ID        = "anomaly_flag";
+export const REVIEW_ACTION_COLLECTION_ID       = "review_action";
+export const AUDIT_LOG_COLLECTION_ID           = "audit_log";
+
+// ─── Transaction Match ────────────────────────────────────────────────────────
+export async function storeTransactionMatches(matches) {
+  if (!matches || matches.length === 0) return;
+  const results = [];
+  for (const match of matches) {
+    const doc = await databases.createDocument(
+      DB_ID, TRANSACTION_MATCH_COLLECTION_ID, ID.unique(), match
+    );
+    results.push(doc);
+  }
+  return results;
+}
+
+export async function getTransactionMatches(clientId) {
+  const res = await databases.listDocuments(
+    DB_ID, TRANSACTION_MATCH_COLLECTION_ID,
+    [Query.equal("clientId", clientId), Query.limit(2000)]
+  );
+  return res.documents;
+}
+
+export async function updateTransactionMatch(matchId, updates) {
+  return databases.updateDocument(
+    DB_ID, TRANSACTION_MATCH_COLLECTION_ID, matchId, updates
+  );
+}
+
+// ─── Category Suggestion ──────────────────────────────────────────────────────
+export async function storeCategorySuggestions(suggestions) {
+  if (!suggestions || suggestions.length === 0) return;
+  for (const s of suggestions) {
+    await databases.createDocument(
+      DB_ID, CATEGORY_SUGGESTION_COLLECTION_ID, ID.unique(), s
+    );
+  }
+}
+
+export async function getCategorySuggestions(clientId) {
+  const res = await databases.listDocuments(
+    DB_ID, CATEGORY_SUGGESTION_COLLECTION_ID,
+    [Query.equal("clientId", clientId), Query.limit(2000)]
+  );
+  return res.documents;
+}
+
+export async function updateCategorySuggestion(docId, updates) {
+  return databases.updateDocument(
+    DB_ID, CATEGORY_SUGGESTION_COLLECTION_ID, docId, updates
+  );
+}
+
+// ─── Anomaly Flag ─────────────────────────────────────────────────────────────
+export async function storeAnomalyFlags(flags) {
+  if (!flags || flags.length === 0) return;
+  for (const f of flags) {
+    await databases.createDocument(
+      DB_ID, ANOMALY_FLAG_COLLECTION_ID, ID.unique(), f
+    );
+  }
+}
+
+export async function getAnomalyFlags(clientId) {
+  const res = await databases.listDocuments(
+    DB_ID, ANOMALY_FLAG_COLLECTION_ID,
+    [Query.equal("clientId", clientId), Query.limit(2000)]
+  );
+  return res.documents;
+}
+
+export async function updateAnomalyFlag(flagId, updates) {
+  return databases.updateDocument(
+    DB_ID, ANOMALY_FLAG_COLLECTION_ID, flagId, updates
+  );
+}
+
+// ─── Review Action ────────────────────────────────────────────────────────────
+export async function storeReviewAction(action) {
+  return databases.createDocument(
+    DB_ID, REVIEW_ACTION_COLLECTION_ID, ID.unique(), action
+  );
+}
+
+// ─── Audit Log ────────────────────────────────────────────────────────────────
+export async function writeAuditLog(entry) {
+  return databases.createDocument(
+    DB_ID, AUDIT_LOG_COLLECTION_ID, ID.unique(), entry
+  );
+}
 // ─── Expense Records ──────────────────────────────────────────────────────────
 export const EXPENSE_COLLECTION_ID = "expense_records";
 
@@ -344,6 +440,24 @@ export async function storeSaleRecords(saleRecords) {
   }
 
   return { saved, skipped };
+}
+// ─── Update bank transaction (remaining amount / match status) ──────────────
+export async function updateBankTransaction(txnId, data) {
+  return databases.updateDocument(DATABASE_ID, BANK_TRANSACTIONS_COLLECTION_ID, txnId, data);
+}
+
+// ─── Update source document (invoice/expense/payroll/sale) ──────────────────
+const SOURCE_DOC_COLLECTIONS = {
+  invoice: INVOICES_COLLECTION_ID,
+  expense: EXPENSE_COLLECTION_ID,
+  payroll: PAYROLL_COLLECTION_ID,
+  sale: SALES_COLLECTION_ID,
+};
+
+export async function updateSourceDocument(docType, docId, data) {
+  const collectionId = SOURCE_DOC_COLLECTIONS[docType];
+  if (!collectionId) throw new Error(`Unknown doc type: ${docType}`);
+  return databases.updateDocument(DATABASE_ID, collectionId, docId, data);
 }
 
 export async function getSaleRecords(clientId) {

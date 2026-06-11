@@ -5,42 +5,49 @@ export default function ClientLayout({ client, children }) {
   const location = useLocation();
 
   const sidebarItems = [
-    {
-      name: "Dashboard",
-      icon: "🏠",
-      path: `/client-dashboard/${client.$id}`,
-    },
-    {
-      name: "Upload Center",
-      icon: "📁",
-      path: `/client-dashboard/${client.$id}/upload`,
-    },
-    {
-      name: "Transactions",
-      icon: "💳",
-      path: `/client-dashboard/${client.$id}/transactions`,
-    },
-    {
-      name: "Review Queue",
-      icon: "🤖",
-      path: `/client-dashboard/${client.$id}/review-queue`,
-    },
-    {
-      name: "Anomalies",
-      icon: "⚠️",
-      path: `/client-dashboard/${client.$id}/anomalies`,
-    },
-    {
-      name: "Audit History",
-      icon: "📜",
-      path: `/client-dashboard/${client.$id}/audit-history`,
-    },
-{
-  name: "Chart of Accounts",
-  icon: "📒",
-  path: `/client-dashboard/${client.$id}/coa`,
-},
-  ];
+  {
+    name: "Dashboard",
+    icon: "🏠",
+    path: `/client-dashboard/${client.$id}`,
+  },
+  {
+    name: "Upload Center",
+    icon: "📁",
+    path: `/client-dashboard/${client.$id}/upload`,
+  },
+  {
+    name: "Transactions",
+    icon: "💳",
+    path: `/client-dashboard/${client.$id}/transactions`,
+  },
+  {
+    name: "Review Queue",
+    icon: "🤖",
+    path: `/client-dashboard/${client.$id}/review-queue`,
+  },
+  {
+    name: "Anomalies",
+    icon: "⚠️",
+    path: `/client-dashboard/${client.$id}/anomalies`,
+  },
+  {
+    name: "Audit History",
+    icon: "📜",
+    path: `/client-dashboard/${client.$id}/audit-history`,
+  },
+  {
+    name: "Chart of Accounts",
+    icon: "📒",
+    path: `/client-dashboard/${client.$id}/coa`,
+  },
+
+  // ADD HERE
+  {
+    name: "Reconciliation",
+    icon: "🔄",
+    path: `/client-dashboard/${client.$id}/reconciliation`,
+  },
+];
 
   return (
     <div style={styles.page}>

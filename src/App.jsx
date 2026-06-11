@@ -5,7 +5,8 @@ import Dashboard from "./pages/Dashboard";
 import AddClient from "./pages/AddClient";
 import ClientDashboard from "./pages/ClientDashboard";
 import UploadCenter from "./pages/UploadCenter";
-import ChartOfAccounts from "./pages/ChartOfAccounts";
+import ReconciliationCenter from "./pages/ReconciliationCenter";
+
 
 function PrivateRoute({ children }) {
   return sessionStorage.getItem("cpa_logged_in")
@@ -54,15 +55,16 @@ export default function App() {
             </PrivateRoute>
           }
         />
+<Route
+  path="/client-dashboard/:id/reconciliation"
+  element={
+    <PrivateRoute>
+      <ReconciliationCenter />
+    </PrivateRoute>
+  }
+/>
 
-        <Route
-          path="/chart-of-accounts"
-          element={
-            <PrivateRoute>
-              <ChartOfAccounts />
-            </PrivateRoute>
-          }
-        />
+       
       </Routes>
     </BrowserRouter>
   );
