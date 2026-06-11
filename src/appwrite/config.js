@@ -32,18 +32,48 @@ export const REVIEW_ACTION_COLLECTION_ID       = "review_action";
 export const AUDIT_LOG_COLLECTION_ID           = "audit_log";
 
 // ─── Transaction Match ────────────────────────────────────────────────────────
+// Whitelist only the exact attribute names defined in your Appwrite transaction_match collection
+function sanitizeMatchRow(row) {
+  return {
+    clientId:            String(row.clientId            ?? ""),
+    bankTxnId:           String(row.bankTxnId           ?? ""),
+    sourceDocId:         String(row.sourceDocId         ?? ""),
+    sourceDocType:       String(row.sourceDocType       ?? ""),
+    matchType:           String(row.matchType           ?? "one_to_one"),
+    groupId:             String(row.groupId             ?? ""),
+    status:              String(row.status              ?? "accepted"),
+    confidenceScore:     parseFloat(row.confidenceScore ?? 0),
+    confidenceBreakdown: typeof row.confidenceBreakdown === "string"
+                           ? row.confidenceBreakdown
+                           : JSON.stringify(row.confidenceBreakdown ?? {}),
+    matchReason:         String(row.matchReason         ?? "").slice(0, 1000),
+    matchedBy:           String(row.matchedBy           ?? ""),
+    matchedAmount:       parseFloat(row.matchedAmount   ?? 0),
+    remainingBankAmount: parseFloat(row.remainingBankAmount ?? 0),
+    remainingDocAmount:  parseFloat(row.remainingDocAmount  ?? 0),
+    currencyNote:        String(row.currencyNote        ?? "").slice(0, 200),
+    reviewedAt:          String(row.reviewedAt          ?? ""),
+    batchId:             String(row.batchId             ?? ""),
+    // DO NOT include: isManual (not in schema)
+  };
+}
+
 export async function storeTransactionMatches(matches) {
   if (!matches || matches.length === 0) return;
   const results = [];
   for (const match of matches) {
-    const doc = await databases.createDocument(
-      DB_ID, TRANSACTION_MATCH_COLLECTION_ID, ID.unique(), match
-    );
-    results.push(doc);
+    try {
+      const doc = await databases.createDocument(
+        DB_ID, TRANSACTION_MATCH_COLLECTION_ID, ID.unique(), sanitizeMatchRow(match)
+      );
+      results.push(doc);
+    } catch (err) {
+      console.error("storeTransactionMatches failed for row:", JSON.stringify(sanitizeMatchRow(match)), err.message);
+      throw err; // re-throw so the UI shows the real error
+    }
   }
   return results;
 }
-
 export async function getTransactionMatches(clientId) {
   const res = await databases.listDocuments(
     DB_ID, TRANSACTION_MATCH_COLLECTION_ID,

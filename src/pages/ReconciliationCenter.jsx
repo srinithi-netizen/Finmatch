@@ -39,34 +39,18 @@ function fmtDate(d) {
 
 // Derive display status from pending AI results (local state) or from DB matches
 function getBankTxnStatus(txn, dbMatches, pendingSuggestions) {
-  // ── 1. Trust the matchStatus field on the txn itself (set by handleConfirmGroup) ──
-  if (txn.matchStatus === "matched" || txn.matchStatus === "reconciled") {
-    return { label: "Matched", color: "green", confidence: 100 };
-  }
-  if (txn.matchStatus === "partial" || txn.matchStatus === "partially_reconciled") {
-    const amount    = toFloat(txn.amount);
-    const remaining = toFloat(txn.remainingAmount ?? amount);
-    const pct       = amount > 0 ? Math.round(((amount - remaining) / amount) * 100) : 0;
-    return { label: "Partial", color: "orange", confidence: pct };
-  }
-
-  // ── 2. Check DB confirmed matches ──────────────────────────────────────────
+  // Check DB confirmed matches first
   const confirmed = dbMatches.filter(
     (m) => m.bankTxnId === txn.$id && ["accepted", "manual"].includes(m.status)
   );
   if (confirmed.length > 0) {
+    const remaining = toFloat(txn.remainingAmount ?? txn.amount);
     const amount    = toFloat(txn.amount);
-    const remaining = toFloat(txn.remainingAmount ?? amount);
     if (remaining <= 0) return { label: "Matched", color: "green", confidence: 100 };
-    if (remaining < amount) {
-      const pct = Math.round(((amount - remaining) / amount) * 100);
-      return { label: "Partial", color: "orange", confidence: pct };
-    }
-    // confirmed rows exist but remainingAmount not yet updated — still show matched
-    return { label: "Matched", color: "green", confidence: 100 };
+    if (remaining < amount) return { label: "Partial", color: "orange", confidence: Math.round(((amount - remaining) / amount) * 100) };
   }
 
-  // ── 3. Pending AI suggestions (not yet saved) ──────────────────────────────
+  // Check pending AI suggestions
   const pending = pendingSuggestions[txn.$id];
   if (pending) {
     if (pending.matches.length === 0) return { label: "Unmatched", color: "red", confidence: 0 };
@@ -75,16 +59,13 @@ function getBankTxnStatus(txn, dbMatches, pendingSuggestions) {
     return { label: "Needs Review", color: "blue", confidence: Math.round(topConf * 100) };
   }
 
-  // ── 4. DB ai_suggested (run before but not yet accepted) ───────────────────
-  const aiSuggested = dbMatches.filter(
-    (m) => m.bankTxnId === txn.$id && m.status === "ai_suggested"
-  );
+  // Check DB ai_suggested
+  const aiSuggested = dbMatches.filter((m) => m.bankTxnId === txn.$id && m.status === "ai_suggested");
   if (aiSuggested.length > 0) {
     const avgConf = aiSuggested.reduce((s, m) => s + toFloat(m.confidenceScore), 0) / aiSuggested.length;
     return { label: "Needs Review", color: "blue", confidence: Math.round(avgConf * 100) };
   }
 
-  // ── 5. Default ─────────────────────────────────────────────────────────────
   return { label: "Unmatched", color: "red", confidence: 0 };
 }
 
@@ -748,12 +729,12 @@ export default function ReconciliationCenter() {
       if (anomalyRowsToStore.length)  await storeAnomalyFlags(anomalyRowsToStore);
 
       // 5. Update bank transaction
-     await updateBankTransaction(selectedTxn.$id, {
-  matchStatus,               // "matched", "partial", or "unmatched"
-  remainingAmount: remainingBankAmount,
-  matchedDocumentId:    [...checkedDocIds][0] ?? null,
-  reconciliationStatus: matchStatus === "matched" ? "reconciled" : "partially_reconciled",
-});
+      await updateBankTransaction(selectedTxn.$id, {
+        matchStatus,
+        remainingAmount:       remainingBankAmount,
+        matchedDocumentId:     [...checkedDocIds][0] ?? null,
+        reconciliationStatus:  matchStatus === "matched" ? "reconciled" : "partially_reconciled",
+      });
 
       // 6. Update each accepted source document
       for (const docId of checkedDocIds) {
@@ -766,7 +747,7 @@ export default function ReconciliationCenter() {
           remainingAmount: newRemaining,
           paymentStatus:   newRemaining <= 0 ? "paid" : "partially_paid",
           matchStatus:     "matched",
-          bankTxnId:       selectedTxn.$id,
+          matchedBankTxnId:       selectedTxn.$id,
         });
       }
 
