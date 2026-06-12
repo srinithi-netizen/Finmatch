@@ -26,10 +26,33 @@ export const SALES_COLLECTION_ID             = "sale_records";
 export { ID, Query };
 // ── NEW collection IDs (add these to your existing config.js) ─────────────────
 export const TRANSACTION_MATCH_COLLECTION_ID  = "transaction_match";
-export const CATEGORY_SUGGESTION_COLLECTION_ID = "category_suggestion";
 export const ANOMALY_FLAG_COLLECTION_ID        = "anomaly_flag";
 export const REVIEW_ACTION_COLLECTION_ID       = "review_action";
 export const AUDIT_LOG_COLLECTION_ID           = "audit_log";
+
+// ─── Centralized Audit Helper ─────────────────────────────────────────────────
+export async function logAudit({ clientId, entityType, entityId, action, performedBy, oldValue, newValue, note }) {
+    if (!performedBy || performedBy === "system") return;
+
+  try {
+    return await databases.createDocument(
+      DB_ID, AUDIT_LOG_COLLECTION_ID, ID.unique(),
+      {
+        clientId:    String(clientId ?? ""),
+        entityType:  String(entityType ?? ""),
+        entityId:    String(entityId ?? ""),
+        action:      String(action ?? ""),
+        performedBy: String(performedBy ?? ""),
+        oldValue:    oldValue != null ? String(oldValue).slice(0, 500) : "",
+        newValue:    newValue != null ? String(newValue).slice(0, 500) : "",
+        note:        note != null ? String(note).slice(0, 1000) : "",
+      }
+    );
+  } catch (err) {
+    console.error("logAudit failed:", err.message);
+    // Don't throw — audit log failure shouldn't break the main action
+  }
+}
 
 // ─── Transaction Match ────────────────────────────────────────────────────────
 // Whitelist only the exact attribute names defined in your Appwrite transaction_match collection
@@ -58,7 +81,7 @@ function sanitizeMatchRow(row) {
   };
 }
 
-export async function storeTransactionMatches(matches) {
+export async function storeTransactionMatches(matches, performedBy) {
   if (!matches || matches.length === 0) return;
   const results = [];
   for (const match of matches) {
@@ -67,6 +90,17 @@ export async function storeTransactionMatches(matches) {
         DB_ID, TRANSACTION_MATCH_COLLECTION_ID, ID.unique(), sanitizeMatchRow(match)
       );
       results.push(doc);
+
+      await logAudit({
+        clientId:    match.clientId,
+        entityType:  "transaction_match",
+        entityId:    doc.$id,
+        action:      "MATCH_CREATED",
+        performedBy: performedBy ?? match.matchedBy ?? "system",
+        oldValue:    "",
+        newValue:    JSON.stringify(sanitizeMatchRow(match)),
+        note:        `Match created for bank txn ${match.bankTxnId} -> doc ${match.sourceDocId || "(misc)"}`,
+      });
     } catch (err) {
       console.error("storeTransactionMatches failed for row:", JSON.stringify(sanitizeMatchRow(match)), err.message);
       throw err; // re-throw so the UI shows the real error
@@ -82,44 +116,156 @@ export async function getTransactionMatches(clientId) {
   return res.documents;
 }
 
-export async function updateTransactionMatch(matchId, updates) {
-  return databases.updateDocument(
+export async function updateTransactionMatch(matchId, updates, clientId, performedBy) {
+  const result = await databases.updateDocument(
     DB_ID, TRANSACTION_MATCH_COLLECTION_ID, matchId, updates
   );
+
+  await logAudit({
+    clientId,
+    entityType:  "transaction_match",
+    entityId:    matchId,
+    action:      "MATCH_UPDATED",
+    performedBy: performedBy ?? "system",
+    oldValue:    "",
+    newValue:    JSON.stringify(updates),
+    note:        `Updated match fields: ${Object.keys(updates).join(", ")}`,
+  });
+
+  return result;
 }
 
-// ─── Category Suggestion ──────────────────────────────────────────────────────
-export async function storeCategorySuggestions(suggestions) {
-  if (!suggestions || suggestions.length === 0) return;
-  for (const s of suggestions) {
-    await databases.createDocument(
-      DB_ID, CATEGORY_SUGGESTION_COLLECTION_ID, ID.unique(), s
-    );
-  }
-}
-
-export async function getCategorySuggestions(clientId) {
+// ─── Category Suggestion deleted──────────────────────────────────────────────────────
+// ─── Audit Log Read ────────────────────────────────────────────────────────────
+export async function getAuditLogs(clientId, limit = 500) {
   const res = await databases.listDocuments(
-    DB_ID, CATEGORY_SUGGESTION_COLLECTION_ID,
-    [Query.equal("clientId", clientId), Query.limit(2000)]
+    DB_ID,
+    AUDIT_LOG_COLLECTION_ID,
+    [Query.equal("clientId", clientId), Query.orderDesc("$createdAt"), Query.limit(limit)]
   );
   return res.documents;
 }
+//getCoa-----
+export async function getStandardCoaAccounts() {
 
-export async function updateCategorySuggestion(docId, updates) {
-  return databases.updateDocument(
-    DB_ID, CATEGORY_SUGGESTION_COLLECTION_ID, docId, updates
+  const res =
+    await databases.listDocuments(
+      DB_ID,
+      COA_ACCOUNTS_COLLECTION_ID,
+      [Query.limit(500)]
+    );
+
+  return res.documents.filter(
+    a => a.is_active !== false
   );
 }
-
 // ─── Anomaly Flag ─────────────────────────────────────────────────────────────
-export async function storeAnomalyFlags(flags) {
+export async function storeAnomalyFlags(flags, performedBy) {
+
   if (!flags || flags.length === 0) return;
+
+  const clientId = flags[0].clientId;
+
+  // Fetch ALL existing anomalies for this client (any status, not just "open")
+  const existing = await databases.listDocuments(
+    DB_ID,
+    ANOMALY_FLAG_COLLECTION_ID,
+    [
+      Query.equal("clientId", clientId),
+      Query.limit(5000)
+    ]
+  );
+
+  // Consistent key format: relatedId::flagType
+  const existingSet = new Set(
+    existing.documents.map(
+      a => `${a.relatedId}::${a.flagType}`
+    )
+  );
+
+  const newFlags = [];
   for (const f of flags) {
-    await databases.createDocument(
-      DB_ID, ANOMALY_FLAG_COLLECTION_ID, ID.unique(), f
-    );
+    const key = `${f.relatedId}::${f.flagType}`;
+    if (existingSet.has(key)) continue;
+    existingSet.add(key); // also dedupe within this same batch
+    newFlags.push(f);
   }
+
+  if (newFlags.length === 0) {
+    console.log("No new anomalies");
+    return;
+  }
+
+  const BATCH_SIZE = 5;
+  const DELAY_MS = 300;
+
+  const sleep = (ms) =>
+    new Promise(resolve => setTimeout(resolve, ms));
+
+  for (let i = 0; i < newFlags.length; i += BATCH_SIZE) {
+
+    const batch = newFlags.slice(i, i + BATCH_SIZE);
+
+    await Promise.all(
+
+      batch.map(async (f) => {
+
+        try {
+
+          const doc =
+            await databases.createDocument(
+              DB_ID,
+              ANOMALY_FLAG_COLLECTION_ID,
+              ID.unique(),
+              f
+            );
+
+          if (performedBy) {
+
+            logAudit({
+              clientId: f.clientId,
+              entityType: "anomaly_flag",
+              entityId: doc.$id,
+              action: "ANOMALY_CREATED",
+              performedBy,
+              oldValue: "",
+              newValue: JSON.stringify(f),
+              note:
+                `Anomaly flagged: ${f.flagType}`
+            }).catch(console.error);
+
+          }
+
+        } catch (err) {
+
+          if (
+            err?.code === 429 ||
+            err?.message?.includes("Rate limit")
+          ) {
+
+            console.warn(
+              `Rate limited: ${f.flagType}`
+            );
+
+            return;
+          }
+
+          console.error(err);
+
+        }
+
+      })
+
+    );
+
+    if (i + BATCH_SIZE < newFlags.length) {
+
+      await sleep(DELAY_MS);
+
+    }
+
+  }
+
 }
 
 export async function getAnomalyFlags(clientId) {
@@ -130,10 +276,23 @@ export async function getAnomalyFlags(clientId) {
   return res.documents;
 }
 
-export async function updateAnomalyFlag(flagId, updates) {
-  return databases.updateDocument(
+export async function updateAnomalyFlag(flagId, updates, clientId, performedBy) {
+  const result = await databases.updateDocument(
     DB_ID, ANOMALY_FLAG_COLLECTION_ID, flagId, updates
   );
+
+  await logAudit({
+    clientId,
+    entityType:  "anomaly_flag",
+    entityId:    flagId,
+    action:      "ANOMALY_UPDATED",
+    performedBy: performedBy ?? "system",
+    oldValue:    "",
+    newValue:    JSON.stringify(updates),
+    note:        `Updated anomaly fields: ${Object.keys(updates).join(", ")}`,
+  });
+
+  return result;
 }
 
 // ─── Review Action ────────────────────────────────────────────────────────────
@@ -185,6 +344,19 @@ export async function storeExpenseRecords(expenses) {
     }
   }
 
+  if (saved > 0) {
+    await logAudit({
+      clientId,
+      entityType:  "expense_record",
+      entityId:    "",
+      action:      "EXPENSE_RECORDS_IMPORTED",
+      performedBy: "system",
+      oldValue:    "",
+      newValue:    "",
+      note:        `Imported ${saved} expense record(s), skipped ${skipped} duplicate(s)`,
+    });
+  }
+
   return { saved, skipped };
 }
 
@@ -199,7 +371,7 @@ export async function getExpenseRecords(clientId) {
 
 // ─── Uploaded Documents ───────────────────────────────────────────────────────
 
-export async function uploadDocument({ file, clientId, documentType, fileHash, uploadBatchId }) {
+export async function uploadDocument({ file, clientId, documentType, fileHash, uploadBatchId, performedBy }) {
   const storageResponse = await storage.createFile(BUCKET_ID, ID.unique(), file);
   const storageFileId   = storageResponse.$id;
 
@@ -219,6 +391,17 @@ export async function uploadDocument({ file, clientId, documentType, fileHash, u
     }
   );
 
+  await logAudit({
+    clientId,
+    entityType:  "uploaded_document",
+    entityId:    dbResponse.$id,
+    action:      "FILE_UPLOADED",
+    performedBy: performedBy ?? "system",
+    oldValue:    "",
+    newValue:    file.name,
+    note:        `Uploaded ${documentType} file "${file.name}" (batch ${uploadBatchId ?? ""})`,
+  });
+
   return {
     storageFileId,
     documentRecordId: dbResponse.$id,
@@ -235,9 +418,21 @@ export async function getUploadedDocuments(clientId) {
   return response.documents;
 }
 
-export async function deleteUploadedDocument(storageFileId, documentRecordId) {
+export async function deleteUploadedDocument(storageFileId, documentRecordId, clientId, performedBy, fileName) {
   await storage.deleteFile(BUCKET_ID, storageFileId);
   await databases.deleteDocument(DB_ID, DOCUMENTS_COLLECTION_ID, documentRecordId);
+
+  await logAudit({
+    clientId:    clientId ?? "",
+    entityType:  "uploaded_document",
+    entityId:    documentRecordId,
+    action:      "FILE_DELETED",
+    performedBy: performedBy ?? "system",
+    oldValue:    fileName ?? "",
+    newValue:    "",
+    note:        `Deleted file "${fileName ?? documentRecordId}"`,
+  });
+
   return true;
 }
 
@@ -291,6 +486,17 @@ export async function logValidationErrors({
   );
 
   await Promise.all(promises);
+
+  await logAudit({
+    clientId,
+    entityType:  "validation_error",
+    entityId:    "",
+    action:      "VALIDATION_ERRORS_LOGGED",
+    performedBy: "system",
+    oldValue:    "",
+    newValue:    "",
+    note:        `${errors.length} validation issue(s) logged for "${fileName}" (${documentType})`,
+  });
 }
 
 // ─── Bank Transactions ────────────────────────────────────────────────────────
@@ -326,6 +532,19 @@ export async function storeBankTransactions(transactions) {
     } catch (err) {
       console.error("storeBankTransactions: failed row", txn.bankRowIndex, err.message);
     }
+  }
+
+  if (saved > 0) {
+    await logAudit({
+      clientId,
+      entityType:  "bank_transaction",
+      entityId:    "",
+      action:      "BANK_TRANSACTIONS_IMPORTED",
+      performedBy: "system",
+      oldValue:    "",
+      newValue:    "",
+      note:        `Imported ${saved} bank transaction(s), skipped ${skipped} duplicate(s)`,
+    });
   }
 
   return { saved, skipped };
@@ -375,6 +594,19 @@ export async function storeInvoices(invoices) {
     }
   }
 
+  if (saved > 0) {
+    await logAudit({
+      clientId,
+      entityType:  "invoice",
+      entityId:    "",
+      action:      "INVOICES_IMPORTED",
+      performedBy: "system",
+      oldValue:    "",
+      newValue:    "",
+      note:        `Imported ${saved} invoice(s), skipped ${skipped} duplicate(s)`,
+    });
+  }
+
   return { saved, skipped };
 }
 
@@ -420,6 +652,19 @@ export async function storePayrollRecords(payrollRecords) {
     } catch (err) {
       console.error("storePayrollRecords: failed row", record.payrollRowIndex, err.message);
     }
+  }
+
+  if (saved > 0) {
+    await logAudit({
+      clientId,
+      entityType:  "payroll_record",
+      entityId:    "",
+      action:      "PAYROLL_RECORDS_IMPORTED",
+      performedBy: "system",
+      oldValue:    "",
+      newValue:    "",
+      note:        `Imported ${saved} payroll record(s), skipped ${skipped} duplicate(s)`,
+    });
   }
 
   return { saved, skipped };
@@ -469,11 +714,37 @@ export async function storeSaleRecords(saleRecords) {
     }
   }
 
+  if (saved > 0) {
+    await logAudit({
+      clientId,
+      entityType:  "sale_record",
+      entityId:    "",
+      action:      "SALE_RECORDS_IMPORTED",
+      performedBy: "system",
+      oldValue:    "",
+      newValue:    "",
+      note:        `Imported ${saved} sale record(s), skipped ${skipped} duplicate(s)`,
+    });
+  }
+
   return { saved, skipped };
 }
 // ─── Update bank transaction (remaining amount / match status) ──────────────
-export async function updateBankTransaction(txnId, data) {
-  return databases.updateDocument(DATABASE_ID, BANK_TRANSACTIONS_COLLECTION_ID, txnId, data);
+export async function updateBankTransaction(txnId, data, clientId, performedBy) {
+  const result = await databases.updateDocument(DATABASE_ID, BANK_TRANSACTIONS_COLLECTION_ID, txnId, data);
+
+  await logAudit({
+    clientId:    clientId ?? "",
+    entityType:  "bank_transaction",
+    entityId:    txnId,
+    action:      "BANK_TXN_UPDATED",
+    performedBy: performedBy ?? "system",
+    oldValue:    "",
+    newValue:    JSON.stringify(data),
+    note:        `Updated fields: ${Object.keys(data).join(", ")}`,
+  });
+
+  return result;
 }
 
 // ─── Update source document (invoice/expense/payroll/sale) ──────────────────
@@ -484,10 +755,23 @@ const SOURCE_DOC_COLLECTIONS = {
   sale: SALES_COLLECTION_ID,
 };
 
-export async function updateSourceDocument(docType, docId, data) {
+export async function updateSourceDocument(docType, docId, data, clientId, performedBy) {
   const collectionId = SOURCE_DOC_COLLECTIONS[docType];
   if (!collectionId) throw new Error(`Unknown doc type: ${docType}`);
-  return databases.updateDocument(DATABASE_ID, collectionId, docId, data);
+  const result = await databases.updateDocument(DATABASE_ID, collectionId, docId, data);
+
+  await logAudit({
+    clientId:    clientId ?? "",
+    entityType:  `${docType}_record`,
+    entityId:    docId,
+    action:      "SOURCE_DOC_UPDATED",
+    performedBy: performedBy ?? "system",
+    oldValue:    "",
+    newValue:    JSON.stringify(data),
+    note:        `Updated ${docType} fields: ${Object.keys(data).join(", ")}`,
+  });
+
+  return result;
 }
 
 export async function getSaleRecords(clientId) {
@@ -513,6 +797,19 @@ export async function getCoaAccounts(clientId) {
   return res.documents.filter((a) => a.is_active !== false);
 }
 
-export async function updateCoaAccount(accountId, data) {
-  return databases.updateDocument(DB_ID, COA_ACCOUNTS_COLLECTION_ID, accountId, data);
+export async function updateCoaAccount(accountId, data, clientId, performedBy) {
+  const result = await databases.updateDocument(DB_ID, COA_ACCOUNTS_COLLECTION_ID, accountId, data);
+
+  await logAudit({
+    clientId:    clientId ?? "",
+    entityType:  "coa_account",
+    entityId:    accountId,
+    action:      "COA_UPDATED",
+    performedBy: performedBy ?? "system",
+    oldValue:    "",
+    newValue:    JSON.stringify(data),
+    note:        `Updated COA account fields: ${Object.keys(data).join(", ")}`,
+  });
+
+  return result;
 }

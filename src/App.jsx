@@ -6,7 +6,10 @@ import AddClient from "./pages/AddClient";
 import ClientDashboard from "./pages/ClientDashboard";
 import UploadCenter from "./pages/UploadCenter";
 import ReconciliationCenter from "./pages/ReconciliationCenter";
-
+import ChartOfAccounts from "./pages/ChartOfAccounts";
+import AuditHistory from "./pages/AuditHistory";
+import AnomalyCenter from "./pages/AnomalyCenter";
+import TransactionPage from "./pages/TransactionPage";
 
 function PrivateRoute({ children }) {
   return sessionStorage.getItem("cpa_logged_in")
@@ -37,6 +40,14 @@ export default function App() {
             </PrivateRoute>
           }
         />
+        <Route
+  path="/client-dashboard/:id/coa"
+  element={
+    <PrivateRoute>
+      <ChartOfAccounts />
+    </PrivateRoute>
+  }
+/>
 
         <Route
           path="/client-dashboard/:id"
@@ -64,6 +75,23 @@ export default function App() {
   }
 />
 
+<Route
+  path="/client-dashboard/:id/audit-history"
+  element={
+    <PrivateRoute>
+      <AuditHistory />
+    </PrivateRoute>
+  }
+/>
+<Route
+  path="/client-dashboard/:id/transactions"
+  element={
+    <PrivateRoute>
+      <TransactionPage />
+    </PrivateRoute>
+  }
+/>
+<Route path="/client-dashboard/:id/anomalies" element={<AnomalyCenter />} />
        
       </Routes>
     </BrowserRouter>

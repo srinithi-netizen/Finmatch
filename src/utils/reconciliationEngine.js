@@ -2,21 +2,6 @@
 
 import { updateBankTransaction, updateSourceDocument } from "../appwrite/config";
 
-export const CATEGORIES = [
-  { code: "PAYROLL",      label: "Payroll & Salaries" },
-  { code: "VENDOR_PAY",   label: "Vendor Payment" },
-  { code: "RENT",         label: "Rent & Lease" },
-  { code: "UTILITIES",    label: "Utilities" },
-  { code: "TRAVEL",       label: "Travel & Transport" },
-  { code: "OFFICE_EXP",   label: "Office Expenses" },
-  { code: "PROFESSIONAL", label: "Professional Services" },
-  { code: "REVENUE",      label: "Revenue / Sales" },
-  { code: "REFUND",       label: "Refund / Reversal" },
-  { code: "TRANSFER",     label: "Internal Transfer" },
-  { code: "TAX",          label: "Tax Payment" },
-  { code: "LOAN",         label: "Loan / EMI" },
-  { code: "MISC",         label: "Miscellaneous" },
-];
 
 function toFloat(v) {
   if (v === null || v === undefined || v === "") return 0;
@@ -98,13 +83,24 @@ export function preScore(bankTxn, sourceDoc) {
   const currencyDoc      = String(sourceDoc.currency ?? "").toUpperCase();
   const currencyMismatch = currencyBank && currencyDoc && currencyBank !== currencyDoc;
 
-  const score =
-    amtScore    * 0.40 +
-    refScore    * 0.30 +
-    vendorScore * 0.20 +
-    dateScore   * 0.10;
+ // Penalise sale docs matched to debit txns and vice versa
+const directionPenalty =
+  (bankTxn.direction === "debit"  && sourceDoc._docType === "sale")    ? 0.4 :
+  (bankTxn.direction === "credit" && sourceDoc._docType === "invoice") ? 0.4 :
+  (bankTxn.direction === "credit" && sourceDoc._docType === "expense") ? 0.4 :
+  (bankTxn.direction === "credit" && sourceDoc._docType === "payroll") ? 0.4 :
+  1.0;
 
-  return { score, amtScore, refScore, vendorScore, dateScore, currencyMismatch };
+const rawScore =
+  amtScore    * 0.40 +
+  refScore    * 0.30 +
+  vendorScore * 0.20 +
+  dateScore   * 0.10;
+
+const score = rawScore * directionPenalty;
+
+return { score, amtScore, refScore, vendorScore, dateScore, currencyMismatch };
+
 }
 
 function buildExplanation(bankTxn, doc, amtScore, refScore, vendorScore, dateScore) {
@@ -224,9 +220,6 @@ function buildLocalResult(bankTxn, candidateDocs) {
     matchType:           localHits.length === 0 ? "unmatched"
                        : localHits.length === 1 ? "one_to_one"
                        : "one_to_many",
-    categoryCode:        guessCategory(bankTxn, localHits[0]
-      ? candidateDocs.find((d) => d.$id === localHits[0].sourceDocId)
-      : null),
     matches:             localHits,
     anomalies:           allAnomalies,
   };

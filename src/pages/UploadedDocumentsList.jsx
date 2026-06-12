@@ -17,6 +17,7 @@ import {
   storage,
   storeExpenseRecords,
   BUCKET_ID,
+  logAudit,
 } from "../appwrite/config";
 export default function UploadedDocumentsList({ clientId }) {
   const [docs, setDocs]                   = useState([]);
@@ -24,6 +25,8 @@ export default function UploadedDocumentsList({ clientId }) {
   const [deletingId, setDeletingId]       = useState(null);
   const [processingId, setProcessingId]   = useState(null);
   const [processResult, setProcessResult] = useState(null);
+
+  const cpaUserId = sessionStorage.getItem("cpa_user_id") ?? "cpa_user";
 
   useEffect(() => {
     if (clientId) load();
@@ -58,7 +61,7 @@ export default function UploadedDocumentsList({ clientId }) {
     if (!window.confirm(`Delete "${doc.fileName}"? This cannot be undone.`)) return;
     setDeletingId(doc.$id);
     try {
-      await deleteUploadedDocument(doc.storageFileId, doc.$id);
+      await deleteUploadedDocument(doc.storageFileId, doc.$id, clientId, cpaUserId, doc.fileName);
       setDocs((prev) => prev.filter((d) => d.$id !== doc.$id));
     } catch (err) {
       alert("Delete failed: " + err.message);
@@ -117,6 +120,18 @@ export default function UploadedDocumentsList({ clientId }) {
       return;
     }
     const { saved, skipped } = await storeBankTransactions(transactions);
+
+    await logAudit({
+      clientId,
+      entityType:  "uploaded_document",
+      entityId:    doc.$id,
+      action:      "DOCUMENT_PROCESSED",
+      performedBy: cpaUserId,
+      oldValue:    "",
+      newValue:    "",
+      note:        `Processed bank statement "${doc.fileName}": ${saved} saved, ${skipped} duplicates skipped (of ${transactions.length} extracted)`,
+    });
+
     setProcessResult({
       type:     "bank_statement",
       docName:  doc.fileName,
@@ -138,6 +153,18 @@ export default function UploadedDocumentsList({ clientId }) {
       return;
     }
     const { saved, skipped } = await storeInvoices(invoices);
+
+    await logAudit({
+      clientId,
+      entityType:  "uploaded_document",
+      entityId:    doc.$id,
+      action:      "DOCUMENT_PROCESSED",
+      performedBy: cpaUserId,
+      oldValue:    "",
+      newValue:    "",
+      note:        `Processed invoice file "${doc.fileName}": ${saved} saved, ${skipped} duplicates skipped (of ${invoices.length} extracted)`,
+    });
+
     setProcessResult({
       type:     "invoice",
       docName:  doc.fileName,
@@ -158,6 +185,18 @@ export default function UploadedDocumentsList({ clientId }) {
     return;
   }
   const { saved, skipped } = await storePayrollRecords(payrollRecords);
+
+  await logAudit({
+    clientId,
+    entityType:  "uploaded_document",
+    entityId:    doc.$id,
+    action:      "DOCUMENT_PROCESSED",
+    performedBy: cpaUserId,
+    oldValue:    "",
+    newValue:    "",
+    note:        `Processed payroll file "${doc.fileName}": ${saved} saved, ${skipped} duplicates skipped (of ${payrollRecords.length} extracted)`,
+  });
+
   setProcessResult({
     type:    "payroll",
     docName: doc.fileName,
@@ -178,6 +217,18 @@ async function processSalesReportDoc(doc, file) {
     return;
   }
   const { saved, skipped } = await storeSaleRecords(saleRecords);
+
+  await logAudit({
+    clientId,
+    entityType:  "uploaded_document",
+    entityId:    doc.$id,
+    action:      "DOCUMENT_PROCESSED",
+    performedBy: cpaUserId,
+    oldValue:    "",
+    newValue:    "",
+    note:        `Processed sales report "${doc.fileName}": ${saved} saved, ${skipped} duplicates skipped (of ${saleRecords.length} extracted)`,
+  });
+
   setProcessResult({
     type:    "sales_report",
     docName: doc.fileName,
@@ -234,6 +285,17 @@ async function processExpenseDoc(doc, file) {
   }
 
   const { saved, skipped } = await storeExpenseRecords(expenses);
+
+  await logAudit({
+    clientId,
+    entityType:  "uploaded_document",
+    entityId:    doc.$id,
+    action:      "DOCUMENT_PROCESSED",
+    performedBy: cpaUserId,
+    oldValue:    "",
+    newValue:    "",
+    note:        `Processed expense report "${doc.fileName}": ${saved} saved, ${skipped} duplicates skipped (of ${expenses.length} extracted)`,
+  });
 
   setProcessResult({
     type: "expense_report",

@@ -21,11 +21,6 @@ export default function ClientLayout({ client, children }) {
     path: `/client-dashboard/${client.$id}/transactions`,
   },
   {
-    name: "Review Queue",
-    icon: "🤖",
-    path: `/client-dashboard/${client.$id}/review-queue`,
-  },
-  {
     name: "Anomalies",
     icon: "⚠️",
     path: `/client-dashboard/${client.$id}/anomalies`,

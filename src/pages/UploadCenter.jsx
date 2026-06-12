@@ -30,6 +30,8 @@ export default function UploadCenter() {
 
   if (!client) return <div>Client not found</div>;
 
+  const cpaUserId = sessionStorage.getItem("cpa_user_id") ?? "cpa_user";
+
   const handleBrowse = () => fileInputRef.current?.click();
 
   // ── Step 1: File-level validation ────────────────────────────────────────────
@@ -201,16 +203,16 @@ export default function UploadCenter() {
             documentType: pf.documentType,
             fileHash: pf.hash,
             uploadBatchId,
+            performedBy: cpaUserId,
           });
-results.push({
-  name: pf.name,
-  success: true,
-
-  path: result.logicalPath,
-
-  storageFileId: result.storageFileId,
-  documentRecordId: result.documentRecordId,
-});        } catch (err) {
+          results.push({
+            name: pf.name,
+            success: true,
+            path: result.logicalPath,
+            storageFileId: result.storageFileId,
+            documentRecordId: result.documentRecordId,
+          });
+        } catch (err) {
           results.push({ name: pf.name, success: false, error: err.message });
         }
       }
@@ -226,32 +228,35 @@ results.push({
   };
 
   const handleDeleteUpload = async (item) => {
-  const confirmed = window.confirm(
-    `Delete ${item.name}?`
-  );
-
-  if (!confirmed) return;
-
-  try {
-    await deleteUploadedDocument(
-      item.storageFileId,
-      item.documentRecordId
+    const confirmed = window.confirm(
+      `Delete ${item.name}?`
     );
 
-    setUploadSummary((prev) =>
-      prev.filter(
-        (f) =>
-          f.documentRecordId !==
-          item.documentRecordId
-      )
-    );
+    if (!confirmed) return;
 
-    alert("File deleted successfully");
-  } catch (err) {
-    console.error(err);
-    alert("Failed to delete file");
-  }
-};
+    try {
+      await deleteUploadedDocument(
+        item.storageFileId,
+        item.documentRecordId,
+        client.$id || client.id,
+        cpaUserId,
+        item.name
+      );
+
+      setUploadSummary((prev) =>
+        prev.filter(
+          (f) =>
+            f.documentRecordId !==
+            item.documentRecordId
+        )
+      );
+
+      alert("File deleted successfully");
+    } catch (err) {
+      console.error(err);
+      alert("Failed to delete file");
+    }
+  };
 
   const resetAll = () => {
     setPendingFiles([]);
@@ -387,32 +392,32 @@ results.push({
                     <span>{r.success ? "✓" : "✗"}</span>
                     <span style={{ flex: 1 }}>{r.name}</span>
                     <div
-  style={{
-    display: "flex",
-    gap: "10px",
-    alignItems: "center",
-  }}
->
-  <span style={{ fontSize: 12 }}>
-    {r.success ? r.path : `Failed: ${r.error}`}
-  </span>
+                      style={{
+                        display: "flex",
+                        gap: "10px",
+                        alignItems: "center",
+                      }}
+                    >
+                      <span style={{ fontSize: 12 }}>
+                        {r.success ? r.path : `Failed: ${r.error}`}
+                      </span>
 
-  {r.success && (
-    <button
-      onClick={() => handleDeleteUpload(r)}
-      style={{
-        background: "#EF4444",
-        color: "#fff",
-        border: "none",
-        padding: "4px 8px",
-        borderRadius: "4px",
-        cursor: "pointer",
-      }}
-    >
-      Delete
-    </button>
-  )}
-</div>
+                      {r.success && (
+                        <button
+                          onClick={() => handleDeleteUpload(r)}
+                          style={{
+                            background: "#EF4444",
+                            color: "#fff",
+                            border: "none",
+                            padding: "4px 8px",
+                            borderRadius: "4px",
+                            cursor: "pointer",
+                          }}
+                        >
+                          Delete
+                        </button>
+                      )}
+                    </div>
                   </div>
                 ))}
               </div>
@@ -429,7 +434,6 @@ results.push({
       </div>
       <div>
         <UploadedDocumentsList clientId={client.$id} />
-
       </div>
     </ClientLayout>
   );
