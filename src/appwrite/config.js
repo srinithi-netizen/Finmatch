@@ -54,7 +54,7 @@ function sanitizeMatchRow(row) {
     currencyNote:        String(row.currencyNote        ?? "").slice(0, 200),
     reviewedAt:          String(row.reviewedAt          ?? ""),
     batchId:             String(row.batchId             ?? ""),
-    // DO NOT include: isManual (not in schema)
+    coaCode:             String(row.coaCode             ?? ""),   // ← ADDED
   };
 }
 
@@ -497,4 +497,22 @@ export async function getSaleRecords(clientId) {
     [Query.equal("clientId", clientId), Query.orderDesc("$createdAt"), Query.limit(1000)]
   );
   return response.documents;
+}
+// ─── Chart of Accounts ────────────────────────────────────────────────────────
+export const COA_ACCOUNTS_COLLECTION_ID = "coa_accounts";
+
+export async function getCoaAccounts(clientId) {
+  const res = await databases.listDocuments(
+    DB_ID,
+    COA_ACCOUNTS_COLLECTION_ID,
+    [
+      Query.limit(500),
+    ]
+  );
+  // Filter active accounts client-side (handles missing/different is_active field gracefully)
+  return res.documents.filter((a) => a.is_active !== false);
+}
+
+export async function updateCoaAccount(accountId, data) {
+  return databases.updateDocument(DB_ID, COA_ACCOUNTS_COLLECTION_ID, accountId, data);
 }

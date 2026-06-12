@@ -11,6 +11,7 @@ import {
   storeTransactionMatches, storeCategorySuggestions, storeAnomalyFlags,
   storeReviewAction, writeAuditLog, ID,
   updateBankTransaction, updateSourceDocument,
+  getCoaAccounts,
 } from "../appwrite/config";
 import {
   runReconciliation, CATEGORIES, getDocAmount, getDocLabel,
@@ -37,9 +38,57 @@ function fmtDate(d) {
   catch { return d; }
 }
 
-// Derive display status from pending AI results (local state) or from DB matches
+// Map reconciliation engine category codes → COA account_type + keywords for AI matching
+const CATEGORY_TO_COA_HINTS = {
+  PAYROLL:      { accountType: "Expense",   keywords: ["salary", "payroll", "wages", "compensation"] },
+  VENDOR_PAY:   { accountType: "Expense",   keywords: ["vendor", "supplier", "purchase", "accounts payable"] },
+  RENT:         { accountType: "Expense",   keywords: ["rent", "lease"] },
+  UTILITIES:    { accountType: "Expense",   keywords: ["utilities", "electricity", "water", "internet"] },
+  TRAVEL:       { accountType: "Expense",   keywords: ["travel", "transport", "fuel", "accommodation"] },
+  OFFICE_EXP:   { accountType: "Expense",   keywords: ["office", "stationery", "supplies"] },
+  PROFESSIONAL: { accountType: "Expense",   keywords: ["professional", "legal", "consulting", "audit"] },
+  REVENUE:      { accountType: "Revenue",   keywords: ["revenue", "sales", "income", "receipts"] },
+  REFUND:       { accountType: "Asset",     keywords: ["refund", "reversal", "return"] },
+  TRANSFER:     { accountType: "Asset",     keywords: ["transfer", "internal"] },
+  TAX:          { accountType: "Liability", keywords: ["tax", "gst", "vat", "tds"] },
+  LOAN:         { accountType: "Liability", keywords: ["loan", "emi", "borrowing", "repayment"] },
+  MISC:         { accountType: "Expense",   keywords: ["miscellaneous"] },
+};
+
+// Find best matching COA account for a given category code + description
+function findBestCoaMatch(categoryCode, description, coaAccounts) {
+  if (!coaAccounts || coaAccounts.length === 0) return null;
+  const hints = CATEGORY_TO_COA_HINTS[categoryCode] ?? CATEGORY_TO_COA_HINTS.MISC;
+  const desc  = (description ?? "").toLowerCase();
+
+  // Filter by account_type first
+  const typeMatches = coaAccounts.filter(
+    (a) => a.account_type === hints.accountType && a.allow_direct_posting !== false
+  );
+  const pool = typeMatches.length > 0 ? typeMatches : coaAccounts;
+
+  // Score by keyword hits
+  let best = null;
+  let bestScore = -1;
+  for (const acct of pool) {
+    const searchStr = [
+      acct.account_name,
+      acct.category,
+      acct.sub_category,
+      acct.description,
+    ].join(" ").toLowerCase();
+
+    let score = 0;
+    for (const kw of hints.keywords) {
+      if (searchStr.includes(kw)) score += 2;
+      if (desc.includes(kw)) score += 1;
+    }
+    if (score > bestScore) { bestScore = score; best = acct; }
+  }
+  return best;
+}
+
 function getBankTxnStatus(txn, dbMatches, pendingSuggestions) {
-  // Check DB confirmed matches first
   const confirmed = dbMatches.filter(
     (m) => m.bankTxnId === txn.$id && ["accepted", "manual"].includes(m.status)
   );
@@ -49,8 +98,6 @@ function getBankTxnStatus(txn, dbMatches, pendingSuggestions) {
     if (remaining <= 0) return { label: "Matched", color: "green", confidence: 100 };
     if (remaining < amount) return { label: "Partial", color: "orange", confidence: Math.round(((amount - remaining) / amount) * 100) };
   }
-
-  // Check pending AI suggestions
   const pending = pendingSuggestions[txn.$id];
   if (pending) {
     if (pending.matches.length === 0) return { label: "Unmatched", color: "red", confidence: 0 };
@@ -58,14 +105,11 @@ function getBankTxnStatus(txn, dbMatches, pendingSuggestions) {
     if (topConf >= 0.75) return { label: "AI Suggested", color: "purple", confidence: Math.round(topConf * 100) };
     return { label: "Needs Review", color: "blue", confidence: Math.round(topConf * 100) };
   }
-
-  // Check DB ai_suggested
   const aiSuggested = dbMatches.filter((m) => m.bankTxnId === txn.$id && m.status === "ai_suggested");
   if (aiSuggested.length > 0) {
     const avgConf = aiSuggested.reduce((s, m) => s + toFloat(m.confidenceScore), 0) / aiSuggested.length;
     return { label: "Needs Review", color: "blue", confidence: Math.round(avgConf * 100) };
   }
-
   return { label: "Unmatched", color: "red", confidence: 0 };
 }
 
@@ -119,13 +163,215 @@ function pillStyle(bg, color, border) {
 }
 
 const PILL_STYLES = {
-  invoice: pillStyle("#eff6ff", "#1d4ed8", "#bfdbfe"),
-  expense: pillStyle("#fffbeb", "#b45309", "#fde68a"),
-  payroll: pillStyle("#f5f3ff", "#6d28d9", "#ddd6fe"),
-  sale:    pillStyle("#f0fdfa", "#0f766e", "#99f6e4"),
+  invoice:  pillStyle("#eff6ff", "#1d4ed8", "#bfdbfe"),
+  expense:  pillStyle("#fffbeb", "#b45309", "#fde68a"),
+  payroll:  pillStyle("#f5f3ff", "#6d28d9", "#ddd6fe"),
+  sale:     pillStyle("#f0fdfa", "#0f766e", "#99f6e4"),
   accepted: pillStyle("#f0fdf4", "#15803d", "#bbf7d0"),
   manual:   pillStyle("#f0fdf4", "#15803d", "#bbf7d0"),
 };
+
+// ─── COA Category Selector Component ─────────────────────────────────────────
+function CoaCategorySelector({ coaAccounts, selectedAccountCode, onSelect, suggestedAccount, label = "COA Account" }) {
+  const [search, setSearch]   = useState("");
+  const [open, setOpen]       = useState(false);
+  const [filter, setFilter]   = useState("all");
+
+  const accountTypes = useMemo(() => {
+    const types = new Set(coaAccounts.map((a) => a.account_type));
+    return ["all", ...Array.from(types)];
+  }, [coaAccounts]);
+
+  const filtered = useMemo(() => {
+    let list = coaAccounts.filter((a) => a.allow_direct_posting !== false);
+    if (filter !== "all") list = list.filter((a) => a.account_type === filter);
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      list = list.filter((a) =>
+        (a.account_name ?? "").toLowerCase().includes(q) ||
+        (a.account_code ?? "").toLowerCase().includes(q) ||
+        (a.category ?? "").toLowerCase().includes(q) ||
+        (a.sub_category ?? "").toLowerCase().includes(q)
+      );
+    }
+    return list;
+  }, [coaAccounts, filter, search]);
+
+  // Group by category
+  const grouped = useMemo(() => {
+    const g = {};
+    for (const a of filtered) {
+      const key = a.category ?? "Other";
+      if (!g[key]) g[key] = [];
+      g[key].push(a);
+    }
+    return g;
+  }, [filtered]);
+
+  const selected = coaAccounts.find((a) => a.account_code === selectedAccountCode);
+
+  const typeColors = {
+    Asset:     { bg: "#eff6ff", color: "#1d4ed8", border: "#bfdbfe" },
+    Liability: { bg: "#fef2f2", color: "#dc2626", border: "#fecaca" },
+    Equity:    { bg: "#f0fdf4", color: "#15803d", border: "#bbf7d0" },
+    Revenue:   { bg: "#f0fdfa", color: "#0f766e", border: "#99f6e4" },
+    Expense:   { bg: "#fffbeb", color: "#b45309", border: "#fde68a" },
+  };
+
+  return (
+    <div style={{ position: "relative" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
+        <span style={{ fontSize: "11px", fontWeight: 700, color: "#6b7280", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+          {label}
+        </span>
+        {suggestedAccount && suggestedAccount.account_code !== selectedAccountCode && (
+          <span style={{ ...pillStyle("#f5f3ff", "#6d28d9", "#ddd6fe"), fontSize: "10px" }}>
+            🤖 AI: {suggestedAccount.account_code} · {suggestedAccount.account_name}
+          </span>
+        )}
+      </div>
+
+      {/* Trigger button */}
+      <button
+        onClick={() => setOpen((v) => !v)}
+        style={{
+          width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between",
+          padding: "7px 10px", border: "1px solid #d1d5db", borderRadius: "8px",
+          background: "#fff", cursor: "pointer", fontSize: "12px",
+          boxShadow: open ? "0 0 0 2px #6366f133" : "none",
+        }}>
+        {selected ? (
+          <span style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+            <span style={{ fontFamily: "monospace", fontWeight: 700, color: "#374151" }}>{selected.account_code}</span>
+            <span style={{ color: "#4b5563" }}>{selected.account_name}</span>
+            {selected.account_type && (
+              <span style={{ ...pillStyle(
+                typeColors[selected.account_type]?.bg ?? "#f3f4f6",
+                typeColors[selected.account_type]?.color ?? "#374151",
+                typeColors[selected.account_type]?.border ?? "#e5e7eb",
+              ), fontSize: "10px" }}>{selected.account_type}</span>
+            )}
+          </span>
+        ) : (
+          <span style={{ color: "#9ca3af" }}>— Select COA Account —</span>
+        )}
+        <span style={{ color: "#9ca3af", fontSize: "10px" }}>{open ? "▲" : "▼"}</span>
+      </button>
+
+      {open && (
+        <div style={{
+          position: "absolute", zIndex: 50, left: 0, right: 0, top: "calc(100% + 4px)",
+          background: "#fff", border: "1px solid #e5e7eb", borderRadius: "10px",
+          boxShadow: "0 10px 25px rgba(0,0,0,0.12)", overflow: "hidden",
+        }}>
+          {/* Search */}
+          <div style={{ padding: "8px 10px", borderBottom: "1px solid #f3f4f6" }}>
+            <input
+              autoFocus
+              type="text"
+              placeholder="Search account name, code, category…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              style={{
+                width: "100%", fontSize: "12px", padding: "6px 8px",
+                border: "1px solid #e5e7eb", borderRadius: "6px", outline: "none",
+              }}
+            />
+          </div>
+
+          {/* Type filter tabs */}
+          <div style={{ display: "flex", gap: "4px", padding: "6px 8px", borderBottom: "1px solid #f3f4f6", flexWrap: "wrap" }}>
+            {accountTypes.map((t) => (
+              <button key={t} onClick={() => setFilter(t)}
+                style={{
+                  padding: "2px 10px", borderRadius: "999px", fontSize: "11px", fontWeight: 600,
+                  border: "none", cursor: "pointer",
+                  background: filter === t ? "#3b82f6" : "#f3f4f6",
+                  color: filter === t ? "#fff" : "#6b7280",
+                }}>
+                {t === "all" ? "All" : t}
+              </button>
+            ))}
+          </div>
+
+          {/* AI suggestion shortcut */}
+          {suggestedAccount && (
+            <div style={{ padding: "6px 10px", background: "#faf5ff", borderBottom: "1px solid #ede9fe" }}>
+              <span style={{ fontSize: "11px", color: "#7c3aed", fontWeight: 600 }}>🤖 AI Suggestion:</span>
+              <button
+                onClick={() => { onSelect(suggestedAccount.account_code); setOpen(false); setSearch(""); }}
+                style={{
+                  marginLeft: "8px", fontSize: "12px", fontWeight: 600, color: "#6d28d9",
+                  background: "none", border: "none", cursor: "pointer", textDecoration: "underline",
+                }}>
+                {suggestedAccount.account_code} · {suggestedAccount.account_name}
+                <span style={{ color: "#9ca3af", fontWeight: 400, marginLeft: "4px" }}>({suggestedAccount.category})</span>
+              </button>
+            </div>
+          )}
+
+          {/* Account list grouped by category */}
+          <div style={{ maxHeight: "280px", overflowY: "auto" }}>
+            {Object.keys(grouped).length === 0 ? (
+              <div style={{ padding: "16px", textAlign: "center", color: "#9ca3af", fontSize: "12px" }}>
+                No accounts found.
+              </div>
+            ) : Object.entries(grouped).map(([cat, accounts]) => (
+              <div key={cat}>
+                <div style={{
+                  padding: "4px 10px", fontSize: "10px", fontWeight: 700,
+                  color: "#9ca3af", textTransform: "uppercase", letterSpacing: "0.06em",
+                  background: "#f9fafb", borderBottom: "1px solid #f3f4f6",
+                }}>
+                  {cat}
+                </div>
+                {accounts.map((a) => {
+                  const tc = typeColors[a.account_type] ?? { bg: "#f3f4f6", color: "#374151", border: "#e5e7eb" };
+                  const isSelected = a.account_code === selectedAccountCode;
+                  return (
+                    <button key={a.$id}
+                      onClick={() => { onSelect(a.account_code); setOpen(false); setSearch(""); }}
+                      style={{
+                        width: "100%", display: "flex", alignItems: "center", gap: "8px",
+                        padding: "7px 10px", background: isSelected ? "#eff6ff" : "transparent",
+                        border: "none", borderBottom: "1px solid #f9fafb",
+                        cursor: "pointer", textAlign: "left",
+                      }}>
+                      <span style={{ fontFamily: "monospace", fontSize: "11px", fontWeight: 700, color: "#374151", minWidth: "44px" }}>
+                        {a.account_code}
+                      </span>
+                      <span style={{ flex: 1, fontSize: "12px", color: "#1f2937", fontWeight: isSelected ? 600 : 400 }}>
+                        {a.account_name}
+                      </span>
+                      {a.sub_category && (
+                        <span style={{ fontSize: "10px", color: "#9ca3af" }}>{a.sub_category}</span>
+                      )}
+                      <span style={{ ...pillStyle(tc.bg, tc.color, tc.border), fontSize: "10px" }}>
+                        {a.account_type}
+                      </span>
+                      {isSelected && <span style={{ color: "#3b82f6", fontSize: "12px" }}>✓</span>}
+                    </button>
+                  );
+                })}
+              </div>
+            ))}
+          </div>
+
+          {/* Clear button */}
+          {selectedAccountCode && (
+            <div style={{ padding: "6px 10px", borderTop: "1px solid #f3f4f6" }}>
+              <button
+                onClick={() => { onSelect(null); setOpen(false); }}
+                style={{ fontSize: "11px", color: "#ef4444", background: "none", border: "none", cursor: "pointer" }}>
+                ✕ Clear selection
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 // ─── Confidence Bar ───────────────────────────────────────────────────────────
 function ConfidenceBar({ score, breakdown, reason }) {
@@ -267,23 +513,23 @@ function AnomalyDashboard({ anomalies, getBankTxn, getSourceDoc, actionLoading, 
     anomalies.forEach((a) => {
       if (filter !== "all" && a.status !== filter) return;
       const ft = (a.flagType ?? "").toLowerCase();
-      if (ft.includes("overpayment"))                            g.overpayment.push(a);
-      else if (ft.includes("underpayment"))                      g.underpayment.push(a);
-      else if (ft.includes("duplicate"))                         g.duplicate.push(a);
-      else if (ft.includes("unmatched_bank"))                    g.unmatched_bank_transaction.push(a);
-      else if (ft.includes("unmatched_document"))                g.unmatched_document.push(a);
-      else                                                        g.other.push(a);
+      if (ft.includes("overpayment"))                             g.overpayment.push(a);
+      else if (ft.includes("underpayment"))                       g.underpayment.push(a);
+      else if (ft.includes("duplicate"))                          g.duplicate.push(a);
+      else if (ft.includes("unmatched_bank"))                     g.unmatched_bank_transaction.push(a);
+      else if (ft.includes("unmatched_document"))                 g.unmatched_document.push(a);
+      else                                                         g.other.push(a);
     });
     return g;
   }, [anomalies, filter]);
 
   const sections = [
-    { key: "overpayment",              title: "Overpayments",               icon: "💰" },
-    { key: "underpayment",             title: "Underpayments",              icon: "📉" },
-    { key: "duplicate",                title: "Duplicate Payments",         icon: "⚠️" },
-    { key: "unmatched_bank_transaction",title: "Unmatched Bank Transactions",icon: "🏦" },
-    { key: "unmatched_document",       title: "Unmatched Documents",        icon: "📄" },
-    { key: "other",                    title: "Other Anomalies",            icon: "🔍" },
+    { key: "overpayment",               title: "Overpayments",                icon: "💰" },
+    { key: "underpayment",              title: "Underpayments",               icon: "📉" },
+    { key: "duplicate",                 title: "Duplicate Payments",          icon: "⚠️" },
+    { key: "unmatched_bank_transaction", title: "Unmatched Bank Transactions", icon: "🏦" },
+    { key: "unmatched_document",        title: "Unmatched Documents",         icon: "📄" },
+    { key: "other",                     title: "Other Anomalies",             icon: "🔍" },
   ];
 
   return (
@@ -310,8 +556,8 @@ function AnomalyDashboard({ anomalies, getBankTxn, getSourceDoc, actionLoading, 
               </div>
               <div className="divide-y divide-gray-100 max-h-[420px] overflow-y-auto">
                 {items.map((a) => {
-                  const txn      = a.relatedType === "bank_txn"    ? getBankTxn(a.relatedId)    : null;
-                  const doc      = a.relatedType === "source_doc"  ? getSourceDoc(a.relatedId)  : null;
+                  const txn      = a.relatedType === "bank_txn"   ? getBankTxn(a.relatedId)   : null;
+                  const doc      = a.relatedType === "source_doc" ? getSourceDoc(a.relatedId) : null;
                   const isOpen   = a.status === "open";
                   const expected = toFloat(a.expectedAmount);
                   const received = toFloat(a.receivedAmount);
@@ -386,25 +632,27 @@ export default function ReconciliationCenter() {
   const [progress,    setProgress]    = useState({ current: 0, total: 0 });
 
   // DB state
-  const [bankTxns,   setBankTxns]   = useState([]);
-  const [sourceDocs, setSourceDocs] = useState([]);
-  const [dbMatches,  setDbMatches]  = useState([]);   // confirmed matches from DB
-  const [categories, setCategories] = useState([]);
-  const [anomalies,  setAnomalies]  = useState([]);
+  const [bankTxns,    setBankTxns]    = useState([]);
+  const [sourceDocs,  setSourceDocs]  = useState([]);
+  const [dbMatches,   setDbMatches]   = useState([]);
+  const [categories,  setCategories]  = useState([]);
+  const [anomalies,   setAnomalies]   = useState([]);
+  const [coaAccounts, setCoaAccounts] = useState([]);
 
-  // Local AI suggestions (NOT yet in DB) — keyed by bankTxnId
-  // { [bankTxnId]: { matches: [...], categoryCode, anomalies } }
+  // Local AI suggestions keyed by bankTxnId
   const [pendingSuggestions, setPendingSuggestions] = useState({});
 
-  const [selectedTxnId,      setSelectedTxnId]      = useState(null);
-  const [expandedDocId,      setExpandedDocId]       = useState(null);
-  const [checkedDocIds,      setCheckedDocIds]       = useState(new Set());
-  const [bankFilter,         setBankFilter]          = useState("all");
-  const [searchTerm,         setSearchTerm]          = useState("");
-  const [actionLoading,      setAL]                  = useState(null);
-  const [manualAddType,      setManualAddType]       = useState("invoice");
-  const [manualAddDocId,     setManualAddDocId]      = useState("");
-  const [localCategories,    setLocalCategories]     = useState({}); // [bankTxnId]: categoryCode
+  const [selectedTxnId,   setSelectedTxnId]   = useState(null);
+  const [expandedDocId,   setExpandedDocId]   = useState(null);
+  const [checkedDocIds,   setCheckedDocIds]   = useState(new Set());
+  const [bankFilter,      setBankFilter]      = useState("all");
+  const [searchTerm,      setSearchTerm]      = useState("");
+  const [actionLoading,   setAL]              = useState(null);
+  const [manualAddType,   setManualAddType]   = useState("invoice");
+  const [manualAddDocId,  setManualAddDocId]  = useState("");
+
+  // Local overrides: { [bankTxnId]: { categoryCode, coaAccountCode } }
+  const [localOverrides, setLocalOverrides] = useState({});
 
   const cpaUserId = sessionStorage.getItem("cpa_user_id") ?? "cpa_user";
 
@@ -412,7 +660,7 @@ export default function ReconciliationCenter() {
   const loadAll = useCallback(async () => {
     setLoading(true);
     try {
-      const [txns, invs, exps, pays, sales, mats, cats, anoms] = await Promise.all([
+      const [txns, invs, exps, pays, sales, mats, cats, anoms, coa] = await Promise.all([
         getBankTransactions(clientId),
         getInvoices(clientId),
         getExpenseRecords(clientId),
@@ -421,6 +669,7 @@ export default function ReconciliationCenter() {
         getTransactionMatches(clientId),
         getCategorySuggestions(clientId),
         getAnomalyFlags(clientId),
+        getCoaAccounts(clientId).catch(() => []), // graceful fallback if collection missing
       ]);
       setSourceDocs([
         ...invs.map((d)  => ({ ...d, _docType: "invoice" })),
@@ -432,6 +681,7 @@ export default function ReconciliationCenter() {
       setDbMatches(mats);
       setCategories(cats);
       setAnomalies(anoms);
+      setCoaAccounts(coa);
     } catch (e) { setError(e.message); }
     finally { setLoading(false); }
   }, [clientId]);
@@ -439,31 +689,29 @@ export default function ReconciliationCenter() {
   useEffect(() => { loadAll(); }, [loadAll]);
 
   // ─── Helpers ──────────────────────────────────────────────────────────────
-  const getBankTxn  = (id) => bankTxns.find((t)   => t.$id === id);
+  const getBankTxn   = (id) => bankTxns.find((t)   => t.$id === id);
   const getSourceDoc = (id) => sourceDocs.find((d) => d.$id === id);
 
   const selectedTxn = selectedTxnId ? getBankTxn(selectedTxnId) : null;
 
-  // Build the list of suggestions to show for the selected txn
-  // Priority: pending AI suggestions > DB ai_suggested
+  // Active suggestions for selected txn
   const activeSuggestions = useMemo(() => {
     if (!selectedTxnId) return [];
     const pending = pendingSuggestions[selectedTxnId];
     if (pending) {
-      // Map to a shape similar to DB match rows
       return pending.matches.map((m, i) => ({
-        $id:             `pending_${selectedTxnId}_${i}`,
-        bankTxnId:       selectedTxnId,
-        sourceDocId:     m.sourceDocId,
-        sourceDocType:   m.sourceDocType,
-        matchedAmount:   m.matchedAmount,
+        $id:              `pending_${selectedTxnId}_${i}`,
+        bankTxnId:        selectedTxnId,
+        sourceDocId:      m.sourceDocId,
+        sourceDocType:    m.sourceDocType,
+        matchedAmount:    m.matchedAmount,
         remainingDocAmount: m.remainingDocumentAmount,
-        confidenceScore: m.confidence,
+        confidenceScore:  m.confidence,
         confidenceBreakdown: m.confidenceBreakdown,
-        matchReason:     m.reason,
-        currencyNote:    m.currencyNote,
-        status:          "pending",
-        isPending:       true,
+        matchReason:      m.reason,
+        currencyNote:     m.currencyNote,
+        status:           "pending",
+        isPending:        true,
       }));
     }
     return dbMatches.filter((m) => m.bankTxnId === selectedTxnId && m.status !== "rejected");
@@ -475,11 +723,8 @@ export default function ReconciliationCenter() {
     const pending = pendingSuggestions[selectedTxnId];
     let preChecked;
     if (pending) {
-      // Auto-check docs with confidence >= 0.75
       preChecked = new Set(
-        pending.matches
-          .filter((m) => m.confidence >= 0.75)
-          .map((m) => m.sourceDocId)
+        pending.matches.filter((m) => m.confidence >= 0.75).map((m) => m.sourceDocId)
       );
     } else {
       preChecked = new Set(
@@ -493,26 +738,42 @@ export default function ReconciliationCenter() {
     setExpandedDocId(null);
   }, [selectedTxnId]); // eslint-disable-line
 
-  // Category for selected txn
-  const activeCategory = useMemo(() => {
+  // Active category code for selected txn
+  const activeCategoryCode = useMemo(() => {
     if (!selectedTxnId) return "";
-    if (localCategories[selectedTxnId]) return localCategories[selectedTxnId];
+    if (localOverrides[selectedTxnId]?.categoryCode) return localOverrides[selectedTxnId].categoryCode;
     if (pendingSuggestions[selectedTxnId]) return pendingSuggestions[selectedTxnId].categoryCode ?? "";
     const c = categories.find((c) => c.bankTxnId === selectedTxnId && c.status === "manual")
            ?? categories.find((c) => c.bankTxnId === selectedTxnId && c.status === "ai_suggested");
     return c?.categoryCode ?? "";
-  }, [selectedTxnId, localCategories, pendingSuggestions, categories]);
+  }, [selectedTxnId, localOverrides, pendingSuggestions, categories]);
+
+  // Active COA account code for selected txn
+  const activeCoaCode = useMemo(() => {
+    if (!selectedTxnId) return null;
+    if (localOverrides[selectedTxnId]?.coaAccountCode !== undefined) return localOverrides[selectedTxnId].coaAccountCode;
+    // Check if already stored on the bank txn
+    const txn = getBankTxn(selectedTxnId);
+    return txn?.coaCode ?? null;
+  }, [selectedTxnId, localOverrides, bankTxns]); // eslint-disable-line
+
+  // AI-suggested COA account based on current category + description
+  const aiSuggestedCoaAccount = useMemo(() => {
+    if (!selectedTxn || coaAccounts.length === 0) return null;
+    const catCode = activeCategoryCode || "MISC";
+    return findBestCoaMatch(catCode, selectedTxn.description, coaAccounts);
+  }, [selectedTxn, activeCategoryCode, coaAccounts]);
 
   // Counts for filter tabs
   const counts = useMemo(() => {
     const c = { all: bankTxns.length, matched: 0, partial: 0, unmatched: 0, review: 0, suggested: 0 };
     bankTxns.forEach((t) => {
       const st = getBankTxnStatus(t, dbMatches, pendingSuggestions);
-      if (st.color === "green")  c.matched++;
-      else if (st.color === "orange") c.partial++;
-      else if (st.color === "red")    c.unmatched++;
-      else if (st.color === "blue")   c.review++;
-      else if (st.color === "purple") c.suggested++;
+      if (st.color === "green")        c.matched++;
+      else if (st.color === "orange")  c.partial++;
+      else if (st.color === "red")     c.unmatched++;
+      else if (st.color === "blue")    c.review++;
+      else if (st.color === "purple")  c.suggested++;
     });
     return c;
   }, [bankTxns, dbMatches, pendingSuggestions]);
@@ -561,7 +822,30 @@ export default function ReconciliationCenter() {
     };
   }, [sourceDocs, dbMatches]);
 
-  // ─── Run AI Reconciliation (LOCAL ONLY — no DB writes) ───────────────────
+  const hasPending = selectedTxnId && !!pendingSuggestions[selectedTxnId];
+
+  // ─── Override helpers ─────────────────────────────────────────────────────
+  const setOverride = (txnId, patch) => {
+    setLocalOverrides((prev) => ({
+      ...prev,
+      [txnId]: { ...(prev[txnId] ?? {}), ...patch },
+    }));
+  };
+
+  // When category changes, reset AI COA suggestion (keep user override if they had one)
+  const handleCategoryChange = (txnId, newCode) => {
+    setOverride(txnId, { categoryCode: newCode });
+    // If user never manually picked a COA, clear it so AI re-suggests based on new category
+    if (!localOverrides[txnId]?.coaAccountCode) {
+      setOverride(txnId, { categoryCode: newCode, coaAccountCode: undefined });
+    }
+  };
+
+  const handleCoaChange = (txnId, newCode) => {
+    setOverride(txnId, { coaAccountCode: newCode });
+  };
+
+  // ─── Run AI Reconciliation ────────────────────────────────────────────────
   const handleRunReconciliation = async () => {
     setRunning(true);
     setError(null);
@@ -575,17 +859,16 @@ export default function ReconciliationCenter() {
         onProgress: ({ current, total }) => setProgress({ current, total }),
       });
 
-      // Index results by bankTxnId
       const newPending = {};
       for (const r of results) {
         newPending[r.bankTxnId] = r;
       }
       setPendingSuggestions(newPending);
 
-      const total     = results.length;
-      const matched   = results.filter((r) => r.matches.length > 0 && r.matches[0].confidence >= 0.75).length;
+      const total       = results.length;
+      const matched     = results.filter((r) => r.matches.length > 0 && r.matches[0].confidence >= 0.75).length;
       const needsReview = results.filter((r) => r.matches.length > 0 && r.matches[0].confidence < 0.75).length;
-      const unmatched = results.filter((r) => r.matches.length === 0).length;
+      const unmatched   = results.filter((r) => r.matches.length === 0).length;
 
       setSuccessMsg(`AI analysis complete: ${matched} auto-suggested · ${needsReview} need review · ${unmatched} unmatched. Review and click Accept to confirm.`);
       setTimeout(() => setSuccessMsg(null), 6000);
@@ -603,29 +886,36 @@ export default function ReconciliationCenter() {
     setAL("confirm");
 
     try {
-      const batchId  = ID.unique();
-      const groupId  = `grp_${selectedTxn.$id}_${batchId}`;
-      const now      = new Date().toISOString();
+      const batchId    = ID.unique();
+      const groupId    = `grp_${selectedTxn.$id}_${batchId}`;
+      const now        = new Date().toISOString();
       const bankAmount = toFloat(selectedTxn.amount);
-      const pending  = pendingSuggestions[selectedTxnId];
+      const pending    = pendingSuggestions[selectedTxnId];
 
-      // 1. Build match rows for accepted docs
+      // Resolve final COA code: user override > AI suggestion > null
+      const finalCoaCode = activeCoaCode
+        ?? (aiSuggestedCoaAccount ? aiSuggestedCoaAccount.account_code : null);
+      const finalCoaAccount = finalCoaCode
+        ? coaAccounts.find((a) => a.account_code === finalCoaCode) ?? null
+        : null;
+
+      // 1. Build match rows
       const matchRowsToStore = [];
       let totalMatchedAmount = 0;
 
       for (const docId of checkedDocIds) {
-        const suggestion = activeSuggestions.find((m) => m.sourceDocId === docId);
-        const doc        = getSourceDoc(docId);
+        const suggestion    = activeSuggestions.find((m) => m.sourceDocId === docId);
+        const doc           = getSourceDoc(docId);
         if (!doc) continue;
 
-        const docRemaining   = toFloat(doc.remainingAmount ?? getDocAmount(doc));
-        const bankRemaining  = toFloat(selectedTxn.remainingAmount ?? selectedTxn.amount);
-        const matchedAmount  = suggestion
+        const docRemaining  = toFloat(doc.remainingAmount ?? getDocAmount(doc));
+        const bankRemaining = toFloat(selectedTxn.remainingAmount ?? selectedTxn.amount);
+        const matchedAmount = suggestion
           ? toFloat(suggestion.matchedAmount)
           : Math.min(docRemaining, bankRemaining);
-        totalMatchedAmount  += matchedAmount;
+        totalMatchedAmount += matchedAmount;
 
-        const confScore = suggestion ? toFloat(suggestion.confidenceScore) : 1.0;
+        const confScore     = suggestion ? toFloat(suggestion.confidenceScore) : 1.0;
         const confBreakdown = suggestion?.confidenceBreakdown
           ? (typeof suggestion.confidenceBreakdown === "string"
               ? suggestion.confidenceBreakdown
@@ -651,6 +941,8 @@ export default function ReconciliationCenter() {
           currencyNote:        suggestion?.currencyNote ?? "",
           reviewedAt:          now,
           batchId,
+          coaCode:             finalCoaCode ?? "",   // ← ADDED
+
         });
       }
 
@@ -659,8 +951,8 @@ export default function ReconciliationCenter() {
                         : remainingBankAmount < bankAmount ? "partial"
                         : "unmatched";
 
-      // 2. Build category row
-      const catCode  = localCategories[selectedTxnId] ?? pending?.categoryCode ?? "MISC";
+      // 2. Category row
+      const catCode  = activeCategoryCode || pending?.categoryCode || "MISC";
       const catLabel = CATEGORIES.find((c) => c.code === catCode)?.label ?? "Miscellaneous";
       const catRow   = {
         clientId, bankTxnId: selectedTxn.$id,
@@ -668,7 +960,7 @@ export default function ReconciliationCenter() {
         status: "manual", overriddenBy: cpaUserId, batchId,
       };
 
-      // 3. Build anomaly rows from pending suggestions
+      // 3. Anomaly rows
       const anomalyRowsToStore = [];
       if (pending) {
         for (const anomaly of (pending.anomalies ?? [])) {
@@ -687,7 +979,6 @@ export default function ReconciliationCenter() {
             batchId,
           });
         }
-        // Unmatched docs in the suggestion set that were NOT accepted
         const notAccepted = pending.matches.filter((m) => !checkedDocIds.has(m.sourceDocId));
         for (const m of notAccepted) {
           const doc = getSourceDoc(m.sourceDocId);
@@ -723,20 +1014,30 @@ export default function ReconciliationCenter() {
         });
       }
 
-      // 4. Persist everything
-      if (matchRowsToStore.length)    await storeTransactionMatches(matchRowsToStore);
+      // 4. Persist matches, category, anomalies
+      if (matchRowsToStore.length)   await storeTransactionMatches(matchRowsToStore);
       await storeCategorySuggestions([catRow]);
-      if (anomalyRowsToStore.length)  await storeAnomalyFlags(anomalyRowsToStore);
+      if (anomalyRowsToStore.length) await storeAnomalyFlags(anomalyRowsToStore);
 
-      // 5. Update bank transaction
-      await updateBankTransaction(selectedTxn.$id, {
+      // 5. Update bank transaction — include coaCode if resolved
+      const bankTxnUpdate = {
         matchStatus,
-        remainingAmount:       remainingBankAmount,
-        matchedDocumentId:     [...checkedDocIds][0] ?? null,
-        reconciliationStatus:  matchStatus === "matched" ? "reconciled" : "partially_reconciled",
-      });
+        remainingAmount:      remainingBankAmount,
+        matchedDocumentId:    [...checkedDocIds][0] ?? null,
+        reconciliationStatus: matchStatus === "matched" ? "reconciled" : "partially_reconciled",
+        categoryCode:         catCode,
+        categoryLabel:        catLabel,
+      };
+      if (finalCoaCode) {
+        bankTxnUpdate.coaCode          = finalCoaCode;
+        bankTxnUpdate.coaAccountName   = finalCoaAccount?.account_name ?? "";
+        bankTxnUpdate.coaCategory      = finalCoaAccount?.category ?? "";
+        bankTxnUpdate.coaSubCategory   = finalCoaAccount?.sub_category ?? "";
+        bankTxnUpdate.coaAccountType   = finalCoaAccount?.account_type ?? "";
+      }
+      await updateBankTransaction(selectedTxn.$id, bankTxnUpdate);
 
-      // 6. Update each accepted source document
+      // 6. Update source documents
       for (const docId of checkedDocIds) {
         const match = matchRowsToStore.find((m) => m.sourceDocId === docId);
         const doc   = getSourceDoc(docId);
@@ -744,10 +1045,10 @@ export default function ReconciliationCenter() {
         const docTotal     = toFloat(doc.remainingAmount ?? getDocAmount(doc));
         const newRemaining = Math.max(0, docTotal - match.matchedAmount);
         await updateSourceDocument(doc._docType, docId, {
-          remainingAmount: newRemaining,
-          paymentStatus:   newRemaining <= 0 ? "paid" : "partially_paid",
-          matchStatus:     "matched",
-          matchedBankTxnId:       selectedTxn.$id,
+          remainingAmount:  newRemaining,
+          paymentStatus:    newRemaining <= 0 ? "paid" : "partially_paid",
+          matchStatus:      "matched",
+          matchedBankTxnId: selectedTxn.$id,
         });
       }
 
@@ -755,25 +1056,30 @@ export default function ReconciliationCenter() {
       await storeReviewAction({
         clientId, matchId: groupId, anomalyId: "", actionType: "confirm_group",
         performedBy: cpaUserId,
-        comment: `Accepted ${checkedDocIds.size} doc(s) for txn ${selectedTxn.$id}`,
+        comment: `Accepted ${checkedDocIds.size} doc(s) for txn ${selectedTxn.$id}${finalCoaCode ? ` | COA: ${finalCoaCode}` : ""}`,
         batchId,
       });
       await writeAuditLog({
         clientId, entityType: "transaction_match", entityId: selectedTxn.$id,
         action: "MANUALLY_APPROVED", performedBy: cpaUserId,
         oldValue: "pending", newValue: "accepted",
-        note: `${checkedDocIds.size} document(s) confirmed`,
+        note: `${checkedDocIds.size} document(s) confirmed${finalCoaCode ? ` | COA: ${finalCoaCode} (${finalCoaAccount?.account_name ?? ""})` : ""}`,
       });
 
-      // 8. Remove from pending + reload
+      // 8. Clean up pending
       setPendingSuggestions((prev) => {
+        const next = { ...prev };
+        delete next[selectedTxnId];
+        return next;
+      });
+      setLocalOverrides((prev) => {
         const next = { ...prev };
         delete next[selectedTxnId];
         return next;
       });
 
       await loadAll();
-      setSuccessMsg(`✓ Match confirmed and saved: ${checkedDocIds.size} document(s) accepted.`);
+      setSuccessMsg(`✓ Match confirmed and saved: ${checkedDocIds.size} document(s) accepted${finalCoaCode ? ` · COA: ${finalCoaCode}` : ""}.`);
       setTimeout(() => setSuccessMsg(null), 4000);
     } catch (e) {
       setError(e.message);
@@ -782,7 +1088,6 @@ export default function ReconciliationCenter() {
     }
   };
 
-  // ─── Reject all pending for this txn ─────────────────────────────────────
   const handleRejectSuggestion = () => {
     setPendingSuggestions((prev) => {
       const next = { ...prev };
@@ -792,12 +1097,7 @@ export default function ReconciliationCenter() {
     setCheckedDocIds(new Set());
   };
 
-  // ─── Category override (local until Accept) ───────────────────────────────
-  const handleCategoryOverride = (bankTxnId, newCode) => {
-    setLocalCategories((prev) => ({ ...prev, [bankTxnId]: newCode }));
-  };
-
-  // After Accept, also persist category override if user changed it for a confirmed txn
+  // Save category for already-confirmed txn
   const handleSaveCategory = async (bankTxnId, newCode) => {
     const existing = categories.find(
       (c) => c.bankTxnId === bankTxnId && ["ai_suggested", "manual"].includes(c.status)
@@ -810,13 +1110,38 @@ export default function ReconciliationCenter() {
         clientId, bankTxnId, categoryCode: newCat.code, categoryLabel: newCat.label,
         status: "manual", overriddenBy: cpaUserId, batchId: existing?.batchId ?? "",
       }]);
+      // Also update coaCode on bank txn if COA was selected
+      const overriddenCoa = localOverrides[bankTxnId]?.coaAccountCode
+        ?? aiSuggestedCoaAccount?.account_code;
+      if (overriddenCoa) {
+        const coaAcct = coaAccounts.find((a) => a.account_code === overriddenCoa);
+        await updateBankTransaction(bankTxnId, {
+          categoryCode:    newCat.code,
+          categoryLabel:   newCat.label,
+          coaCode:         overriddenCoa,
+          coaAccountName:  coaAcct?.account_name ?? "",
+          coaCategory:     coaAcct?.category ?? "",
+          coaSubCategory:  coaAcct?.sub_category ?? "",
+          coaAccountType:  coaAcct?.account_type ?? "",
+        });
+      } else {
+        await updateBankTransaction(bankTxnId, {
+          categoryCode:  newCat.code,
+          categoryLabel: newCat.label,
+        });
+      }
+      setLocalOverrides((prev) => {
+        const next = { ...prev };
+        delete next[bankTxnId];
+        return next;
+      });
       await loadAll();
-      setSuccessMsg("Category saved.");
+      setSuccessMsg("Category & COA saved.");
       setTimeout(() => setSuccessMsg(null), 2000);
     } catch (e) { setError(e.message); }
   };
 
-  // ─── Manual add ──────────────────────────────────────────────────────────
+  // Manual add
   const handleAddManualSuggestion = async () => {
     if (!selectedTxn || !manualAddDocId) return;
     const doc = getSourceDoc(manualAddDocId);
@@ -827,7 +1152,6 @@ export default function ReconciliationCenter() {
       const bankRemaining = toFloat(selectedTxn.remainingAmount ?? selectedTxn.amount);
       const matchedAmount = Math.min(docRemaining, bankRemaining);
 
-      // Add to pending suggestions instead of DB
       setPendingSuggestions((prev) => {
         const existing = prev[selectedTxn.$id] ?? { matches: [], categoryCode: "MISC", anomalies: [] };
         const alreadyIn = existing.matches.some((m) => m.sourceDocId === manualAddDocId);
@@ -862,7 +1186,7 @@ export default function ReconciliationCenter() {
     finally { setAL(null); }
   };
 
-  // ─── Anomaly actions ──────────────────────────────────────────────────────
+  // Anomaly actions
   const handleAnomalyAction = async (anomaly, action, note) => {
     setAL(anomaly.$id + "_" + action);
     try {
@@ -873,10 +1197,8 @@ export default function ReconciliationCenter() {
     } finally { setAL(null); }
   };
 
-  const toggleCheck       = (docId) => setCheckedDocIds((prev) => { const n = new Set(prev); n.has(docId) ? n.delete(docId) : n.add(docId); return n; });
-  const toggleExpandDoc   = (docId) => setExpandedDocId((prev) => prev === docId ? null : docId);
-
-  const hasPending = selectedTxnId && !!pendingSuggestions[selectedTxnId];
+  const toggleCheck     = (docId) => setCheckedDocIds((prev) => { const n = new Set(prev); n.has(docId) ? n.delete(docId) : n.add(docId); return n; });
+  const toggleExpandDoc = (docId) => setExpandedDocId((prev) => prev === docId ? null : docId);
 
   // ─── Loading ──────────────────────────────────────────────────────────────
   if (loading) return (
@@ -899,7 +1221,7 @@ export default function ReconciliationCenter() {
           <div>
             <h1 className="text-xl font-semibold text-gray-900">Reconciliation Center</h1>
             <p className="text-xs text-gray-400 mt-0.5">
-              {bankTxns.length} bank transactions · {sourceDocs.length} source documents
+              {bankTxns.length} bank transactions · {sourceDocs.length} source documents · {coaAccounts.length} COA accounts
               {Object.keys(pendingSuggestions).length > 0 && (
                 <span className="ml-2 text-purple-600 font-medium">
                   · {Object.keys(pendingSuggestions).length} pending AI suggestions (not yet saved)
@@ -957,12 +1279,10 @@ export default function ReconciliationCenter() {
             </div>
           </div>
         )}
-
-        {/* ── Info banner when pending suggestions exist ── */}
         {Object.keys(pendingSuggestions).length > 0 && !running && (
           <div className="mb-3 p-3 bg-purple-50 border border-purple-200 text-purple-800 rounded-lg text-sm flex items-center gap-2">
             <span className="text-base">🤖</span>
-            <span>AI suggestions ready. Select a transaction, review the matches, then click <strong>Accept & Confirm</strong> to save to database.</span>
+            <span>AI suggestions ready. Select a transaction, review the matches, assign a COA account, then click <strong>Accept & Confirm</strong> to save.</span>
           </div>
         )}
 
@@ -998,9 +1318,9 @@ export default function ReconciliationCenter() {
                 {filteredBankTxns.length === 0 ? (
                   <div className="text-center py-12 text-gray-400 text-sm">No transactions found.</div>
                 ) : filteredBankTxns.map((txn) => {
-                  const status = getBankTxnStatus(txn, dbMatches, pendingSuggestions);
-                  const colors = STATUS_COLORS[status.color] ?? STATUS_COLORS.red;
-                  const isSelected = selectedTxnId === txn.$id;
+                  const status      = getBankTxnStatus(txn, dbMatches, pendingSuggestions);
+                  const colors      = STATUS_COLORS[status.color] ?? STATUS_COLORS.red;
+                  const isSelected  = selectedTxnId === txn.$id;
                   const isPendingTxn = !!pendingSuggestions[txn.$id];
 
                   return (
@@ -1019,9 +1339,14 @@ export default function ReconciliationCenter() {
                         <span className="text-xs text-gray-400 font-mono truncate max-w-[55%]">
                           {txn.refNumber ?? txn.reference_number ?? txn.referenceNumber ?? "—"}
                         </span>
-                        {status.confidence > 0 && (
-                          <span className={`text-xs font-semibold ${colors.text}`}>{status.confidence}%</span>
-                        )}
+                        <div className="flex items-center gap-1.5">
+                          {txn.coaCode && (
+                            <span style={pillStyle("#f0fdf4","#15803d","#bbf7d0")} className="text-xs">{txn.coaCode}</span>
+                          )}
+                          {status.confidence > 0 && (
+                            <span className={`text-xs font-semibold ${colors.text}`}>{status.confidence}%</span>
+                          )}
+                        </div>
                       </div>
                     </button>
                   );
@@ -1054,9 +1379,9 @@ export default function ReconciliationCenter() {
                     </div>
                     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "4px 12px" }}>
                       {[
-                        { label: "Date",   value: fmtDate(selectedTxn.txnDate ?? selectedTxn.transaction_date ?? selectedTxn.date) },
-                        { label: "Amount", value: fmt(selectedTxn.amount, selectedTxn.currency), bold: true },
-                        { label: "Ref No.", value: selectedTxn.refNumber ?? selectedTxn.reference_number ?? "—", mono: true },
+                        { label: "Date",     value: fmtDate(selectedTxn.txnDate ?? selectedTxn.transaction_date ?? selectedTxn.date) },
+                        { label: "Amount",   value: fmt(selectedTxn.amount, selectedTxn.currency), bold: true },
+                        { label: "Ref No.",  value: selectedTxn.refNumber ?? selectedTxn.reference_number ?? "—", mono: true },
                         { label: "Currency", value: selectedTxn.currency ?? "—" },
                       ].map((item, i) => (
                         <div key={i} style={{ display: "flex", flexDirection: "column" }}>
@@ -1107,9 +1432,7 @@ export default function ReconciliationCenter() {
                                       {getDocRef(doc)}
                                     </span>
                                   )}
-                                  {m.isPending && (
-                                    <span style={pillStyle("#f5f3ff","#6d28d9","#ddd6fe")}>AI</span>
-                                  )}
+                                  {m.isPending && <span style={pillStyle("#f5f3ff","#6d28d9","#ddd6fe")}>AI</span>}
                                   {["accepted","manual"].includes(m.status) && (
                                     <span style={PILL_STYLES.accepted}>{m.status}</span>
                                   )}
@@ -1177,25 +1500,66 @@ export default function ReconciliationCenter() {
                     </div>
                   </div>
 
-                  {/* Bottom: Category + Totals + Accept */}
+                  {/* Bottom: Category + COA + Totals + Accept */}
                   <div className="border-t border-gray-200 p-3 bg-gray-50">
-                    {/* Category */}
+
+                    {/* Category selector */}
                     <div className="flex items-center gap-2 mb-2">
-                      <span className="text-xs text-gray-500 font-medium">Category:</span>
+                      <span className="text-xs text-gray-500 font-medium whitespace-nowrap">Category:</span>
                       <select className="flex-1 text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white"
-                        value={activeCategory}
-                        onChange={(e) => handleCategoryOverride(selectedTxn.$id, e.target.value)}>
+                        value={activeCategoryCode}
+                        onChange={(e) => handleCategoryChange(selectedTxn.$id, e.target.value)}>
                         <option value="">— select —</option>
                         {CATEGORIES.map((c) => <option key={c.code} value={c.code}>{c.label}</option>)}
                       </select>
-                      {/* Show Save Category button only for already-confirmed txns */}
-                      {!hasPending && localCategories[selectedTxnId] && (
-                        <button onClick={() => handleSaveCategory(selectedTxnId, localCategories[selectedTxnId])}
+                      {!hasPending && (localOverrides[selectedTxnId]?.categoryCode || localOverrides[selectedTxnId]?.coaAccountCode) && (
+                        <button onClick={() => handleSaveCategory(selectedTxnId, activeCategoryCode)}
                           className="text-xs px-2 py-1.5 bg-indigo-600 text-white rounded-lg whitespace-nowrap">
                           Save
                         </button>
                       )}
                     </div>
+
+                    {/* COA Account selector */}
+                    {coaAccounts.length > 0 && (
+                      <div className="mb-3">
+                        <CoaCategorySelector
+                          coaAccounts={coaAccounts}
+                          selectedAccountCode={activeCoaCode}
+                          onSelect={(code) => handleCoaChange(selectedTxn.$id, code)}
+                          suggestedAccount={aiSuggestedCoaAccount}
+                          label="Chart of Accounts"
+                        />
+                        {activeCoaCode && (() => {
+                          const acct = coaAccounts.find((a) => a.account_code === activeCoaCode);
+                          if (!acct) return null;
+                          return (
+                            <div style={{ display: "flex", gap: "6px", marginTop: "5px", flexWrap: "wrap" }}>
+                              {acct.category && (
+                                <span style={pillStyle("#f3f4f6","#4b5563","#e5e7eb")} className="text-xs">
+                                  📁 {acct.category}
+                                </span>
+                              )}
+                              {acct.sub_category && (
+                                <span style={pillStyle("#f3f4f6","#6b7280","#e5e7eb")} className="text-xs">
+                                  {acct.sub_category}
+                                </span>
+                              )}
+                              {acct.normal_balance && (
+                                <span style={pillStyle("#eef2ff","#4338ca","#c7d2fe")} className="text-xs">
+                                  {acct.normal_balance} side
+                                </span>
+                              )}
+                              {acct.tax_category && (
+                                <span style={pillStyle("#fff7ed","#c2410c","#fed7aa")} className="text-xs">
+                                  🧾 {acct.tax_category}
+                                </span>
+                              )}
+                            </div>
+                          );
+                        })()}
+                      </div>
+                    )}
 
                     {/* Totals */}
                     <div style={S.totalsBox}>
@@ -1265,15 +1629,50 @@ export default function ReconciliationCenter() {
                         <DetailRow label="Amount"        value={fmt(selectedTxn.amount, selectedTxn.currency)} />
                         <DetailRow label="Debit"         value={selectedTxn.debit  != null ? fmt(selectedTxn.debit,  selectedTxn.currency) : "—"} />
                         <DetailRow label="Credit"        value={selectedTxn.credit != null ? fmt(selectedTxn.credit, selectedTxn.currency) : "—"} />
-                        <DetailRow label="Balance"       value={selectedTxn.balance!= null ? fmt(selectedTxn.balance,selectedTxn.currency) : "—"} />
+                        <DetailRow label="Balance"       value={selectedTxn.balance != null ? fmt(selectedTxn.balance, selectedTxn.currency) : "—"} />
                         <DetailRow label="Currency"      value={selectedTxn.currency  ?? "—"} />
                         <DetailRow label="Direction"     value={selectedTxn.direction ?? "—"} />
                         <DetailRow label="Description"   value={selectedTxn.description ?? "—"} />
                         <DetailRow label="Reference No." value={selectedTxn.refNumber ?? selectedTxn.reference_number ?? "—"} mono />
                         <DetailRow label="Match Status"  value={selectedTxn.matchStatus ?? "—"} badge />
-                        <DetailRow label="Remaining"     value={fmt(selectedTxn.remainingAmount ?? selectedTxn.amount, selectedTxn.currency)} highlight last />
+                        <DetailRow label="Category"      value={selectedTxn.categoryLabel ?? activeCategoryCode ?? "—"} />
+                        {selectedTxn.coaCode && (
+                          <>
+                            <DetailRow label="COA Code"    value={selectedTxn.coaCode} mono />
+                            <DetailRow label="COA Account" value={selectedTxn.coaAccountName ?? "—"} />
+                            <DetailRow label="COA Category" value={selectedTxn.coaCategory ?? "—"} />
+                            {selectedTxn.coaSubCategory && (
+                              <DetailRow label="COA Sub-Cat" value={selectedTxn.coaSubCategory} />
+                            )}
+                          </>
+                        )}
+                        <DetailRow label="Remaining" value={fmt(selectedTxn.remainingAmount ?? selectedTxn.amount, selectedTxn.currency)} highlight last />
                       </div>
                     </div>
+
+                    {/* COA Details panel (when account selected but not yet saved) */}
+                    {activeCoaCode && !selectedTxn.coaCode && (() => {
+                      const acct = coaAccounts.find((a) => a.account_code === activeCoaCode);
+                      if (!acct) return null;
+                      return (
+                        <div>
+                          <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wide mb-2">
+                            📒 COA Account (pending save)
+                          </h3>
+                          <div style={{ ...S.sectionBox, border: "1px solid #ddd6fe" }}>
+                            <DetailRow label="Code"         value={acct.account_code} mono />
+                            <DetailRow label="Name"         value={acct.account_name} />
+                            <DetailRow label="Type"         value={acct.account_type} badge />
+                            <DetailRow label="Category"     value={acct.category ?? "—"} />
+                            {acct.sub_category && <DetailRow label="Sub-Category" value={acct.sub_category} />}
+                            {acct.normal_balance && <DetailRow label="Normal Balance" value={acct.normal_balance} />}
+                            {acct.tax_category && <DetailRow label="Tax Category" value={acct.tax_category} />}
+                            {acct.financial_statement && <DetailRow label="Statement" value={acct.financial_statement} />}
+                            {acct.description && <DetailRow label="Description" value={acct.description} last />}
+                          </div>
+                        </div>
+                      );
+                    })()}
 
                     {expandedDocId && (() => {
                       const m   = activeSuggestions.find((mm) => mm.sourceDocId === expandedDocId);
