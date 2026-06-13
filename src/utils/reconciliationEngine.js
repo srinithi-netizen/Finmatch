@@ -167,7 +167,74 @@ function findCombinations(items, targetAmount, maxSize = MAX_COMBO_SIZE, toleran
   results.sort((a, b) => a.diff - b.diff || a.indexes.length - b.indexes.length);
   return results;
 }
+// ─── Ollama COA Categorization ────────────────────────────────────────────────
+async function ollamaSuggestCategory(bankTxn, coaAccounts, matchedDocs = []) {
+  if (!coaAccounts || coaAccounts.length === 0) return null;
 
+  // Build a compact COA list for the prompt (only postable accounts)
+  const postableAccounts = coaAccounts
+    .filter((a) => a.allow_direct_posting !== false && a.is_active !== false)
+    .map((a) => `${a.account_code} | ${a.account_name} | ${a.account_type} | ${a.category}${a.sub_category ? " > " + a.sub_category : ""}`)
+    .join("\n");
+
+  const docContext = matchedDocs.length > 0
+    ? matchedDocs.map((d) => `- ${d._docType}: ${getDocLabel(d)}, amount=${toFloat(getDocAmount(d))}, desc="${d.description ?? ""}"`)
+        .join("\n")
+    : "No matched documents yet.";
+
+  const prompt = `
+You are an Indian accounting expert. Based on the bank transaction and matched documents below,
+suggest the SINGLE most appropriate Chart of Accounts (COA) entry.
+
+BANK TRANSACTION:
+  Date:        ${bankTxn.txnDate ?? bankTxn.date ?? ""}
+  Description: ${bankTxn.description ?? ""}
+  Amount:      ₹${toFloat(bankTxn.amount)}
+  Direction:   ${bankTxn.direction ?? ""} (credit = money received, debit = money paid out)
+  Reference:   ${bankTxn.refNumber ?? bankTxn.reference_number ?? "none"}
+
+MATCHED DOCUMENTS:
+${docContext}
+
+AVAILABLE COA ACCOUNTS (code | name | type | category):
+${postableAccounts}
+
+RULES:
+1. For debit transactions: prefer Expense, Asset, or Liability accounts.
+2. For credit transactions: prefer Revenue or Asset accounts.
+3. Pick the account_code whose name/category best matches the transaction description and matched documents.
+4. For salary/payroll debits: pick a Payroll Expense account.
+5. For vendor payments: pick the relevant Expense account matching the vendor type.
+6. For tax payments (GST/TDS): pick a Tax Expense or Tax Liability account.
+7. Return ONLY the account_code from the list above — nothing else in that field.
+
+Respond ONLY with valid JSON, no markdown:
+{
+  "account_code": "XXXX",
+  "account_name": "Name from the list",
+  "confidence": 0.0 to 1.0,
+  "reason": "one sentence explanation"
+}`.trim();
+
+  try {
+    const parsed = await callOllama(prompt);
+    if (!parsed || !parsed.account_code) return null;
+
+    // Verify the returned code actually exists in our COA
+    const matched = coaAccounts.find(
+      (a) => a.account_code === parsed.account_code
+    );
+    if (!matched) return null;
+
+    return {
+      account: matched,
+      confidence: toFloat(parsed.confidence),
+      reason: parsed.reason ?? "",
+    };
+  } catch {
+    return null;
+  }
+}
 // ============================================================
 // NORMALIZATION OF INPUT DATA
 // Adjust the field-mapping below if your spreadsheet headers differ.

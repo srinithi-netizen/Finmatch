@@ -703,6 +703,7 @@ export default function ReconciliationCenter() {
   const [anomalyNote,        setAnomalyNote]        = useState("");
   const [selectedMonth, setSelectedMonth] = useState(() => new Date().getMonth() + 1);
   const [selectedYear,  setSelectedYear]  = useState(() => new Date().getFullYear());
+  const [ollamaCoaSuggestions, setOllamaCoaSuggestions] = useState({});
 
   const cpaUserId  = sessionStorage.getItem("cpa_user_id") ?? "cpa_user";
   const loadingRef = useRef(false);
@@ -811,12 +812,21 @@ export default function ReconciliationCenter() {
     return getBankTxn(selectedTxnId)?.coaCode ?? null;
   }, [selectedTxnId, localOverrides, bankTxns]); // eslint-disable-line
 
-  const aiSuggestedCoaAccount = useMemo(() => {
-    if (!selectedTxn || coaAccounts.length === 0) return null;
-    const checkedDocTypes = [...checkedDocIds].filter((id) => id !== MISC_DOC_ID).map((id) => getSourceDoc(id)?._docType).filter(Boolean);
-    const inferredDocType = checkedDocTypes[0] ?? activeSuggestions[0]?.sourceDocType ?? null;
-    return findBestCoaMatch(selectedTxn.description, coaAccounts, inferredDocType);
-  }, [selectedTxn, coaAccounts, checkedDocIds, activeSuggestions]); // eslint-disable-line
+ const aiSuggestedCoaAccount = useMemo(() => {
+  if (!selectedTxn || coaAccounts.length === 0) return null;
+
+  // Prefer Ollama suggestion if available for this transaction
+  const ollamaSuggestion = ollamaCoaSuggestions[selectedTxn.$id];
+  if (ollamaSuggestion?.account) return ollamaSuggestion.account;
+
+  // Fallback to deterministic keyword matching
+  const checkedDocTypes = [...checkedDocIds]
+    .filter((id) => id !== MISC_DOC_ID)
+    .map((id) => getSourceDoc(id)?._docType)
+    .filter(Boolean);
+  const inferredDocType = checkedDocTypes[0] ?? activeSuggestions[0]?.sourceDocType ?? null;
+  return findBestCoaMatch(selectedTxn.description, coaAccounts, inferredDocType);
+}, [selectedTxn, coaAccounts, checkedDocIds, activeSuggestions, ollamaCoaSuggestions]);
 
   const counts = useMemo(() => {
     const c = { all: bankTxns.length, matched: 0, partial: 0, unmatched: 0, review: 0, suggested: 0 };
@@ -909,8 +919,27 @@ export default function ReconciliationCenter() {
         onProgress: ({ current, total }) => setProgress({ current, total }),
       });
       const newPending = {};
-      for (const r of results) newPending[r.bankTxnId] = r;
-      setPendingSuggestions(newPending);
+for (const r of results) newPending[r.bankTxnId] = r;
+setPendingSuggestions(newPending);
+
+// ─── Run Ollama COA categorization for each transaction ───────────────────
+const newCoaSuggestions = {};
+for (const r of results) {
+  const txn = bankTxns.find((t) => t.$id === r.bankTxnId);
+  if (!txn) continue;
+
+  // Get the matched docs for this transaction to give Ollama more context
+  const matchedDocs = (r.matches ?? [])
+    .map((m) => sourceDocs.find((d) => d.$id === m.sourceDocId))
+    .filter(Boolean);
+
+  const suggestion = await ollamaSuggestCategory(txn, coaAccounts, matchedDocs);
+  if (suggestion) {
+    newCoaSuggestions[r.bankTxnId] = suggestion;
+  }
+}
+setOllamaCoaSuggestions(newCoaSuggestions);
+
       const matched     = results.filter((r) => r.matches.length > 0 && r.matches[0].confidence >= 0.75).length;
       const needsReview = results.filter((r) => r.matches.length > 0 && r.matches[0].confidence < 0.75).length;
       const unmatched   = results.filter((r) => r.matches.length === 0).length;
@@ -1459,6 +1488,29 @@ export default function ReconciliationCenter() {
                         })()}
                       </div>
                     )}
+                    {/* Ollama COA reasoning pill */}
+{ollamaCoaSuggestions[selectedTxn.$id] && (
+  <div style={{
+    marginTop: "6px",
+    padding: "6px 10px",
+    background: "#faf5ff",
+    border: "1px solid #e9d5ff",
+    borderRadius: "7px",
+    display: "flex",
+    alignItems: "flex-start",
+    gap: "6px",
+  }}>
+    <span style={{ fontSize: "13px", flexShrink: 0 }}>🤖</span>
+    <div style={{ flex: 1 }}>
+      <span style={{ fontSize: "11px", fontWeight: 700, color: "#7c3aed" }}>
+        Ollama suggestion · {Math.round(toFloat(ollamaCoaSuggestions[selectedTxn.$id].confidence) * 100)}% confident
+      </span>
+      <p style={{ fontSize: "11px", color: "#6b7280", margin: "2px 0 0 0", fontStyle: "italic", lineHeight: 1.4 }}>
+        {ollamaCoaSuggestions[selectedTxn.$id].reason}
+      </p>
+    </div>
+  </div>
+)}
                     <div style={S.totalsBox}>
                       <div style={S.totalsLine}>
                         <span style={{ color: "#6b7280" }}>Bank Amount</span>
