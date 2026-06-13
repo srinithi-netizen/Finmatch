@@ -7,7 +7,7 @@ import { parseFileToRows } from "../utils/fileParser";
 import { validateRows, DOCUMENT_TYPES } from "../utils/rowValidation";
 import UploadedDocumentsList from "./UploadedDocumentsList";
 
-
+import MonthYearPicker from "../components/MonthYearPicker";
 import {
   logValidationErrors,
   uploadDocument,
@@ -27,6 +27,8 @@ export default function UploadCenter() {
   const [isDragging, setIsDragging] = useState(false);
   const [stage, setStage] = useState("select"); // select | classify | validate | done
   const [uploadSummary, setUploadSummary] = useState([]); // per-file upload results
+  const [uploadMonth, setUploadMonth] = useState(() => new Date().getMonth() + 1);
+const [uploadYear,  setUploadYear]  = useState(() => new Date().getFullYear());
 
   if (!client) return <div>Client not found</div>;
 
@@ -204,6 +206,8 @@ export default function UploadCenter() {
             fileHash: pf.hash,
             uploadBatchId,
             performedBy: cpaUserId,
+             month: uploadMonth,  // ← ADD
+  year:  uploadYear,   // ← ADD
           });
           results.push({
             name: pf.name,
@@ -329,6 +333,18 @@ export default function UploadCenter() {
         {stage === "classify" && pendingFiles.length > 0 && (
           <div style={styles.fileListBox}>
             <h4>Confirm document type for each file</h4>
+             {/* Month/Year selector */}
+    <div style={{ marginBottom: 16, padding: "12px 14px", background: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: 8 }}>
+      <p style={{ fontSize: 12, fontWeight: 600, color: "#0369a1", marginBottom: 8 }}>
+        📅 Which period do these documents belong to?
+      </p>
+      <MonthYearPicker
+        month={uploadMonth}
+        year={uploadYear}
+        onChange={(m, y) => { setUploadMonth(m); setUploadYear(y); }}
+        label="Document Period"
+      />
+    </div>
             {pendingFiles.map((pf) => (
               <div key={pf.hash} style={styles.fileRow}>
                 <span style={{ flex: 2 }}>📄 {pf.name}</span>

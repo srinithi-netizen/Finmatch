@@ -6,6 +6,7 @@ import { processInvoiceFile }    from "../utils/invoiceProcessor";
 import { processPayrollFile }    from "../utils/payrollProcessor";  
 import { processSalesReportFile } from "../utils/salesReportProcessor";   // ← ADD
 import { processExpenseFile } from "../utils/expenseProcessor";
+import MonthYearPicker from "../components/MonthYearPicker";
 
 import {
   getUploadedDocuments,
@@ -25,6 +26,8 @@ export default function UploadedDocumentsList({ clientId }) {
   const [deletingId, setDeletingId]       = useState(null);
   const [processingId, setProcessingId]   = useState(null);
   const [processResult, setProcessResult] = useState(null);
+  const [filterMonth, setFilterMonth] = useState(null);
+const [filterYear,  setFilterYear]  = useState(null);
 
   const cpaUserId = sessionStorage.getItem("cpa_user_id") ?? "cpa_user";
 
@@ -32,17 +35,17 @@ export default function UploadedDocumentsList({ clientId }) {
     if (clientId) load();
   }, [clientId]);
 
-  async function load() {
-    setLoading(true);
-    try {
-      const result = await getUploadedDocuments(clientId);
-      setDocs(result);
-    } catch (err) {
-      console.error("Failed to load documents:", err);
-    } finally {
-      setLoading(false);
-    }
+  async function load(month = filterMonth, year = filterYear) {
+  setLoading(true);
+  try {
+    const result = await getUploadedDocuments(clientId, month, year);
+    setDocs(result);
+  } catch (err) {
+    console.error("Failed to load documents:", err);
+  } finally {
+    setLoading(false);
   }
+}
 
   // ── Download file blob from Appwrite Storage ─────────────────────────────────
   async function downloadFileBlob(doc) {
@@ -318,8 +321,24 @@ async function processExpenseDoc(doc, file) {
 
 const PROCESSABLE = ["bank_statement", "invoice", "payroll", "sales_report", "expense_report"];
   return (
+    
     <div style={s.wrapper}>
+  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16, flexWrap: "wrap", gap: 10 }}>
+    <h3 style={{ ...s.heading, marginBottom: 0 }}>Uploaded Documents</h3>
+    <MonthYearPicker
+      month={filterMonth}
+      year={filterYear}
+      onChange={(m, y) => {
+        setFilterMonth(m);
+        setFilterYear(y);
+        load(m, y);
+      }}
+      label="Filter by Period"
+    />
+  </div>
       <h3 style={s.heading}>Uploaded Documents</h3>
+    
+      
       <div style={{ overflowX: "auto" }}>
         <table style={s.table}>
           <thead>

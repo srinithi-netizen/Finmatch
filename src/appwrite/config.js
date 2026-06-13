@@ -7,45 +7,57 @@ client
   .setProject("6a27fc2800189d6cffed");
 
 export const databases = new Databases(client);
-export const storage   = new Storage(client);
+export const storage = new Storage(client);
 
 // ─── Collection & Bucket IDs ──────────────────────────────────────────────────
-export const DB_ID                           = "6a27fe0f0008e45ab951";
-export const DATABASE_ID=DB_ID;
-export const CPA_COLLECTION_ID               = "cpa_users";
-export const CLIENTS_COLLECTION_ID           = "clients";
-export const DOCUMENTS_COLLECTION_ID         = "uploaded_documents";
+export const DB_ID = "6a27fe0f0008e45ab951";
+export const DATABASE_ID = DB_ID;
+export const CPA_COLLECTION_ID = "cpa_users";
+export const CLIENTS_COLLECTION_ID = "clients";
+export const DOCUMENTS_COLLECTION_ID = "uploaded_documents";
 export const VALIDATION_ERRORS_COLLECTION_ID = "upload_validation_errors";
-export const BUCKET_ID                       = "6a2903f8000fb8590cb1";
+export const BUCKET_ID = "6a2903f8000fb8590cb1";
 export const BANK_TRANSACTIONS_COLLECTION_ID = "bank_transactions";
-export const INVOICES_COLLECTION_ID          = "invoices";
-export const PAYROLL_COLLECTION_ID           = "payroll_transactions";
-export const SALES_COLLECTION_ID             = "sale_records";
+export const INVOICES_COLLECTION_ID = "invoices";
+export const PAYROLL_COLLECTION_ID = "payroll_transactions";
+export const SALES_COLLECTION_ID = "sale_records";
 
 // Re-export Appwrite helpers so other files only import from here
 export { ID, Query };
 // ── NEW collection IDs (add these to your existing config.js) ─────────────────
-export const TRANSACTION_MATCH_COLLECTION_ID  = "transaction_match";
-export const ANOMALY_FLAG_COLLECTION_ID        = "anomaly_flag";
-export const REVIEW_ACTION_COLLECTION_ID       = "review_action";
-export const AUDIT_LOG_COLLECTION_ID           = "audit_log";
+export const TRANSACTION_MATCH_COLLECTION_ID = "transaction_match";
+export const ANOMALY_FLAG_COLLECTION_ID = "anomaly_flag";
+export const REVIEW_ACTION_COLLECTION_ID = "review_action";
+export const AUDIT_LOG_COLLECTION_ID = "audit_log";
 
+
+// ─── Helper: extract month/year from a date string ───────────────────────────
+export function getMonthYear(dateStr) {
+  if (!dateStr) return { month: null, year: null };
+  try {
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return { month: null, year: null };
+    return { month: d.getMonth() + 1, year: d.getFullYear() };
+  } catch {
+    return { month: null, year: null };
+  }
+}
 // ─── Centralized Audit Helper ─────────────────────────────────────────────────
 export async function logAudit({ clientId, entityType, entityId, action, performedBy, oldValue, newValue, note }) {
-    if (!performedBy || performedBy === "system") return;
+  if (!performedBy || performedBy === "system") return;
 
   try {
     return await databases.createDocument(
       DB_ID, AUDIT_LOG_COLLECTION_ID, ID.unique(),
       {
-        clientId:    String(clientId ?? ""),
-        entityType:  String(entityType ?? ""),
-        entityId:    String(entityId ?? ""),
-        action:      String(action ?? ""),
+        clientId: String(clientId ?? ""),
+        entityType: String(entityType ?? ""),
+        entityId: String(entityId ?? ""),
+        action: String(action ?? ""),
         performedBy: String(performedBy ?? ""),
-        oldValue:    oldValue != null ? String(oldValue).slice(0, 500) : "",
-        newValue:    newValue != null ? String(newValue).slice(0, 500) : "",
-        note:        note != null ? String(note).slice(0, 1000) : "",
+        oldValue: oldValue != null ? String(oldValue).slice(0, 500) : "",
+        newValue: newValue != null ? String(newValue).slice(0, 500) : "",
+        note: note != null ? String(note).slice(0, 1000) : "",
       }
     );
   } catch (err) {
@@ -58,26 +70,28 @@ export async function logAudit({ clientId, entityType, entityId, action, perform
 // Whitelist only the exact attribute names defined in your Appwrite transaction_match collection
 function sanitizeMatchRow(row) {
   return {
-    clientId:            String(row.clientId            ?? ""),
-    bankTxnId:           String(row.bankTxnId           ?? ""),
-    sourceDocId:         String(row.sourceDocId         ?? ""),
-    sourceDocType:       String(row.sourceDocType       ?? ""),
-    matchType:           String(row.matchType           ?? "one_to_one"),
-    groupId:             String(row.groupId             ?? ""),
-    status:              String(row.status              ?? "accepted"),
-    confidenceScore:     parseFloat(row.confidenceScore ?? 0),
+    clientId: String(row.clientId ?? ""),
+    bankTxnId: String(row.bankTxnId ?? ""),
+    sourceDocId: String(row.sourceDocId ?? ""),
+    sourceDocType: String(row.sourceDocType ?? ""),
+    matchType: String(row.matchType ?? "one_to_one"),
+    groupId: String(row.groupId ?? ""),
+    status: String(row.status ?? "accepted"),
+    confidenceScore: parseFloat(row.confidenceScore ?? 0),
     confidenceBreakdown: typeof row.confidenceBreakdown === "string"
-                           ? row.confidenceBreakdown
-                           : JSON.stringify(row.confidenceBreakdown ?? {}),
-    matchReason:         String(row.matchReason         ?? "").slice(0, 1000),
-    matchedBy:           String(row.matchedBy           ?? ""),
-    matchedAmount:       parseFloat(row.matchedAmount   ?? 0),
+      ? row.confidenceBreakdown
+      : JSON.stringify(row.confidenceBreakdown ?? {}),
+    matchReason: String(row.matchReason ?? "").slice(0, 1000),
+    matchedBy: String(row.matchedBy ?? ""),
+    matchedAmount: parseFloat(row.matchedAmount ?? 0),
     remainingBankAmount: parseFloat(row.remainingBankAmount ?? 0),
-    remainingDocAmount:  parseFloat(row.remainingDocAmount  ?? 0),
-    currencyNote:        String(row.currencyNote        ?? "").slice(0, 200),
-    reviewedAt:          String(row.reviewedAt          ?? ""),
-    batchId:             String(row.batchId             ?? ""),
-    coaCode:             String(row.coaCode             ?? ""),   // ← ADDED
+    remainingDocAmount: parseFloat(row.remainingDocAmount ?? 0),
+    currencyNote: String(row.currencyNote ?? "").slice(0, 200),
+    reviewedAt: String(row.reviewedAt ?? ""),
+    batchId: String(row.batchId ?? ""),
+    coaCode: String(row.coaCode ?? ""),  
+     month:               row.month != null ? parseInt(row.month) : 0,
+    year:                row.year  != null ? parseInt(row.year)  : 0, // ← ADDED
   };
 }
 
@@ -92,14 +106,14 @@ export async function storeTransactionMatches(matches, performedBy) {
       results.push(doc);
 
       await logAudit({
-        clientId:    match.clientId,
-        entityType:  "transaction_match",
-        entityId:    doc.$id,
-        action:      "MATCH_CREATED",
+        clientId: match.clientId,
+        entityType: "transaction_match",
+        entityId: doc.$id,
+        action: "MATCH_CREATED",
         performedBy: performedBy ?? match.matchedBy ?? "system",
-        oldValue:    "",
-        newValue:    JSON.stringify(sanitizeMatchRow(match)),
-        note:        `Match created for bank txn ${match.bankTxnId} -> doc ${match.sourceDocId || "(misc)"}`,
+        oldValue: "",
+        newValue: JSON.stringify(sanitizeMatchRow(match)),
+        note: `Match created for bank txn ${match.bankTxnId} -> doc ${match.sourceDocId || "(misc)"}`,
       });
     } catch (err) {
       console.error("storeTransactionMatches failed for row:", JSON.stringify(sanitizeMatchRow(match)), err.message);
@@ -108,13 +122,14 @@ export async function storeTransactionMatches(matches, performedBy) {
   }
   return results;
 }
-export async function getTransactionMatches(clientId) {
-  const res = await databases.listDocuments(
-    DB_ID, TRANSACTION_MATCH_COLLECTION_ID,
-    [Query.equal("clientId", clientId), Query.limit(2000)]
-  );
+export async function getTransactionMatches(clientId, month = null, year = null) {
+  const queries = [Query.equal("clientId", clientId), Query.limit(2000)];
+  if (month) queries.push(Query.equal("month", month));
+  if (year)  queries.push(Query.equal("year",  year));
+  const res = await databases.listDocuments(DB_ID, TRANSACTION_MATCH_COLLECTION_ID, queries);
   return res.documents;
 }
+
 
 export async function updateTransactionMatch(matchId, updates, clientId, performedBy) {
   const result = await databases.updateDocument(
@@ -123,13 +138,13 @@ export async function updateTransactionMatch(matchId, updates, clientId, perform
 
   await logAudit({
     clientId,
-    entityType:  "transaction_match",
-    entityId:    matchId,
-    action:      "MATCH_UPDATED",
+    entityType: "transaction_match",
+    entityId: matchId,
+    action: "MATCH_UPDATED",
     performedBy: performedBy ?? "system",
-    oldValue:    "",
-    newValue:    JSON.stringify(updates),
-    note:        `Updated match fields: ${Object.keys(updates).join(", ")}`,
+    oldValue: "",
+    newValue: JSON.stringify(updates),
+    note: `Updated match fields: ${Object.keys(updates).join(", ")}`,
   });
 
   return result;
@@ -283,13 +298,13 @@ export async function updateAnomalyFlag(flagId, updates, clientId, performedBy) 
 
   await logAudit({
     clientId,
-    entityType:  "anomaly_flag",
-    entityId:    flagId,
-    action:      "ANOMALY_UPDATED",
+    entityType: "anomaly_flag",
+    entityId: flagId,
+    action: "ANOMALY_UPDATED",
     performedBy: performedBy ?? "system",
-    oldValue:    "",
-    newValue:    JSON.stringify(updates),
-    note:        `Updated anomaly fields: ${Object.keys(updates).join(", ")}`,
+    oldValue: "",
+    newValue: JSON.stringify(updates),
+    note: `Updated anomaly fields: ${Object.keys(updates).join(", ")}`,
   });
 
   return result;
@@ -337,8 +352,12 @@ export async function storeExpenseRecords(expenses) {
       continue;
     }
     try {
-      await databases.createDocument(DB_ID, EXPENSE_COLLECTION_ID, ID.unique(), record);
-      saved++;
+const { month, year } = getMonthYear(record.expenseDate ?? record.expense_date);
+      await databases.createDocument(DB_ID, EXPENSE_COLLECTION_ID, ID.unique(), {
+        ...record,
+        month: month ?? 0,
+        year:  year  ?? 0,
+      });      saved++;
     } catch (err) {
       console.error("storeExpenseRecords: failed row", record.expenseRowIndex, err.message);
     }
@@ -347,38 +366,38 @@ export async function storeExpenseRecords(expenses) {
   if (saved > 0) {
     await logAudit({
       clientId,
-      entityType:  "expense_record",
-      entityId:    "",
-      action:      "EXPENSE_RECORDS_IMPORTED",
+      entityType: "expense_record",
+      entityId: "",
+      action: "EXPENSE_RECORDS_IMPORTED",
       performedBy: "system",
-      oldValue:    "",
-      newValue:    "",
-      note:        `Imported ${saved} expense record(s), skipped ${skipped} duplicate(s)`,
+      oldValue: "",
+      newValue: "",
+      note: `Imported ${saved} expense record(s), skipped ${skipped} duplicate(s)`,
     });
   }
 
   return { saved, skipped };
 }
 
-export async function getExpenseRecords(clientId) {
-  const response = await databases.listDocuments(
-    DB_ID,
-    EXPENSE_COLLECTION_ID,
-    [Query.equal("clientId", clientId), Query.orderDesc("$createdAt"), Query.limit(1000)]
-  );
+export async function getExpenseRecords(clientId, month = null, year = null) {
+  const queries = [Query.equal("clientId", clientId), Query.orderDesc("$createdAt"), Query.limit(1000)];
+  if (month) queries.push(Query.equal("month", month));
+  if (year)  queries.push(Query.equal("year",  year));
+  const response = await databases.listDocuments(DB_ID, EXPENSE_COLLECTION_ID, queries);
   return response.documents;
 }
 
 // ─── Uploaded Documents ───────────────────────────────────────────────────────
 
-export async function uploadDocument({ file, clientId, documentType, fileHash, uploadBatchId, performedBy }) {
+export async function uploadDocument({ file, clientId, documentType, fileHash, uploadBatchId, performedBy, month = null, year = null }) {
   const storageResponse = await storage.createFile(BUCKET_ID, ID.unique(), file);
   const storageFileId   = storageResponse.$id;
+  const now = new Date();
+  const docMonth = month ?? (now.getMonth() + 1);  // ← NEW
+  const docYear  = year  ?? now.getFullYear();      // ← NEW
 
   const dbResponse = await databases.createDocument(
-    DB_ID,
-    DOCUMENTS_COLLECTION_ID,
-    ID.unique(),
+    DB_ID, DOCUMENTS_COLLECTION_ID, ID.unique(),
     {
       clientId,
       fileName:     file.name,
@@ -387,34 +406,26 @@ export async function uploadDocument({ file, clientId, documentType, fileHash, u
       uploadBatchId,
       storageFileId,
       logicalPath:  `${clientId}/${documentType}/${file.name}`,
-      uploadedAt:   new Date().toISOString(),
+      uploadedAt:   now.toISOString(),
+      month:        docMonth,  // ← NEW
+      year:         docYear,   // ← NEW
     }
   );
-
-  await logAudit({
-    clientId,
-    entityType:  "uploaded_document",
-    entityId:    dbResponse.$id,
-    action:      "FILE_UPLOADED",
-    performedBy: performedBy ?? "system",
-    oldValue:    "",
-    newValue:    file.name,
-    note:        `Uploaded ${documentType} file "${file.name}" (batch ${uploadBatchId ?? ""})`,
-  });
-
+  // ...
   return {
     storageFileId,
     documentRecordId: dbResponse.$id,
     logicalPath:      dbResponse.logicalPath,
+    month:            docMonth,  // ← NEW
+    year:             docYear,   // ← NEW
   };
 }
 
-export async function getUploadedDocuments(clientId) {
-  const response = await databases.listDocuments(
-    DB_ID,
-    DOCUMENTS_COLLECTION_ID,
-    [Query.equal("clientId", clientId), Query.orderDesc("$createdAt")]
-  );
+export async function getUploadedDocuments(clientId, month = null, year = null) {
+  const queries = [Query.equal("clientId", clientId), Query.orderDesc("$createdAt")];
+  if (month) queries.push(Query.equal("month", month));
+  if (year)  queries.push(Query.equal("year",  year));
+  const response = await databases.listDocuments(DB_ID, DOCUMENTS_COLLECTION_ID, queries);
   return response.documents;
 }
 
@@ -423,14 +434,14 @@ export async function deleteUploadedDocument(storageFileId, documentRecordId, cl
   await databases.deleteDocument(DB_ID, DOCUMENTS_COLLECTION_ID, documentRecordId);
 
   await logAudit({
-    clientId:    clientId ?? "",
-    entityType:  "uploaded_document",
-    entityId:    documentRecordId,
-    action:      "FILE_DELETED",
+    clientId: clientId ?? "",
+    entityType: "uploaded_document",
+    entityId: documentRecordId,
+    action: "FILE_DELETED",
     performedBy: performedBy ?? "system",
-    oldValue:    fileName ?? "",
-    newValue:    "",
-    note:        `Deleted file "${fileName ?? documentRecordId}"`,
+    oldValue: fileName ?? "",
+    newValue: "",
+    note: `Deleted file "${fileName ?? documentRecordId}"`,
   });
 
   return true;
@@ -471,14 +482,14 @@ export async function logValidationErrors({
         clientId,
         fileName,
         documentType,
-        rowNumber:    err.rowNumber ?? 0,
-        severity:     err.severity  ?? "error",
-        field:        err.field     ?? "",
-        message:      (err.message  ?? "").slice(0, 1000),
-        rowData:      (typeof err.rowData === "object"
-                        ? JSON.stringify(err.rowData)
-                        : (err.rowData ?? "")
-                      ).slice(0, 2000),
+        rowNumber: err.rowNumber ?? 0,
+        severity: err.severity ?? "error",
+        field: err.field ?? "",
+        message: (err.message ?? "").slice(0, 1000),
+        rowData: (typeof err.rowData === "object"
+          ? JSON.stringify(err.rowData)
+          : (err.rowData ?? "")
+        ).slice(0, 2000),
         acknowledged: !!acknowledged,
         uploadBatchId,
       }
@@ -489,13 +500,13 @@ export async function logValidationErrors({
 
   await logAudit({
     clientId,
-    entityType:  "validation_error",
-    entityId:    "",
-    action:      "VALIDATION_ERRORS_LOGGED",
+    entityType: "validation_error",
+    entityId: "",
+    action: "VALIDATION_ERRORS_LOGGED",
     performedBy: "system",
-    oldValue:    "",
-    newValue:    "",
-    note:        `${errors.length} validation issue(s) logged for "${fileName}" (${documentType})`,
+    oldValue: "",
+    newValue: "",
+    note: `${errors.length} validation issue(s) logged for "${fileName}" (${documentType})`,
   });
 }
 
@@ -527,7 +538,12 @@ export async function storeBankTransactions(transactions) {
       continue;
     }
     try {
-      await databases.createDocument(DB_ID, BANK_TRANSACTIONS_COLLECTION_ID, ID.unique(), txn);
+      const { month, year } = getMonthYear(txn.txnDate ?? txn.transaction_date ?? txn.date);
+      await databases.createDocument(DB_ID, BANK_TRANSACTIONS_COLLECTION_ID, ID.unique(), {
+        ...txn,
+        month: month ?? 0,
+        year:  year  ?? 0,
+      });
       saved++;
     } catch (err) {
       console.error("storeBankTransactions: failed row", txn.bankRowIndex, err.message);
@@ -537,25 +553,24 @@ export async function storeBankTransactions(transactions) {
   if (saved > 0) {
     await logAudit({
       clientId,
-      entityType:  "bank_transaction",
-      entityId:    "",
-      action:      "BANK_TRANSACTIONS_IMPORTED",
+      entityType: "bank_transaction",
+      entityId: "",
+      action: "BANK_TRANSACTIONS_IMPORTED",
       performedBy: "system",
-      oldValue:    "",
-      newValue:    "",
-      note:        `Imported ${saved} bank transaction(s), skipped ${skipped} duplicate(s)`,
+      oldValue: "",
+      newValue: "",
+      note: `Imported ${saved} bank transaction(s), skipped ${skipped} duplicate(s)`,
     });
   }
 
   return { saved, skipped };
 }
 
-export async function getBankTransactions(clientId) {
-  const response = await databases.listDocuments(
-    DB_ID,
-    BANK_TRANSACTIONS_COLLECTION_ID,
-    [Query.equal("clientId", clientId), Query.orderDesc("$createdAt"), Query.limit(1000)]
-  );
+export async function getBankTransactions(clientId, month = null, year = null) {
+  const queries = [Query.equal("clientId", clientId), Query.orderDesc("$createdAt"), Query.limit(1000)];
+  if (month) queries.push(Query.equal("month", month));
+  if (year)  queries.push(Query.equal("year",  year));
+  const response = await databases.listDocuments(DB_ID, BANK_TRANSACTIONS_COLLECTION_ID, queries);
   return response.documents;
 }
 
@@ -587,8 +602,12 @@ export async function storeInvoices(invoices) {
       continue;
     }
     try {
-      await databases.createDocument(DB_ID, INVOICES_COLLECTION_ID, ID.unique(), inv);
-      saved++;
+const { month, year } = getMonthYear(inv.invoiceDate ?? inv.invoice_date);
+      await databases.createDocument(DB_ID, INVOICES_COLLECTION_ID, ID.unique(), {
+        ...inv,
+        month: month ?? 0,
+        year:  year  ?? 0,
+      });      saved++;
     } catch (err) {
       console.error("storeInvoices: failed row", inv.invoiceRowIndex, err.message);
     }
@@ -597,25 +616,24 @@ export async function storeInvoices(invoices) {
   if (saved > 0) {
     await logAudit({
       clientId,
-      entityType:  "invoice",
-      entityId:    "",
-      action:      "INVOICES_IMPORTED",
+      entityType: "invoice",
+      entityId: "",
+      action: "INVOICES_IMPORTED",
       performedBy: "system",
-      oldValue:    "",
-      newValue:    "",
-      note:        `Imported ${saved} invoice(s), skipped ${skipped} duplicate(s)`,
+      oldValue: "",
+      newValue: "",
+      note: `Imported ${saved} invoice(s), skipped ${skipped} duplicate(s)`,
     });
   }
 
   return { saved, skipped };
 }
 
-export async function getInvoices(clientId) {
-  const response = await databases.listDocuments(
-    DB_ID,
-    INVOICES_COLLECTION_ID,
-    [Query.equal("clientId", clientId), Query.orderDesc("$createdAt"), Query.limit(1000)]
-  );
+export async function getInvoices(clientId, month = null, year = null) {
+  const queries = [Query.equal("clientId", clientId), Query.orderDesc("$createdAt"), Query.limit(1000)];
+  if (month) queries.push(Query.equal("month", month));
+  if (year)  queries.push(Query.equal("year",  year));
+  const response = await databases.listDocuments(DB_ID, INVOICES_COLLECTION_ID, queries);
   return response.documents;
 }
 
@@ -647,8 +665,12 @@ export async function storePayrollRecords(payrollRecords) {
       continue;
     }
     try {
-      await databases.createDocument(DB_ID, PAYROLL_COLLECTION_ID, ID.unique(), record);
-      saved++;
+const { month, year } = getMonthYear(record.payDate ?? record.pay_date);
+      await databases.createDocument(DB_ID, PAYROLL_COLLECTION_ID, ID.unique(), {
+        ...record,
+        month: month ?? 0,
+        year:  year  ?? 0,
+      });      saved++;
     } catch (err) {
       console.error("storePayrollRecords: failed row", record.payrollRowIndex, err.message);
     }
@@ -657,28 +679,26 @@ export async function storePayrollRecords(payrollRecords) {
   if (saved > 0) {
     await logAudit({
       clientId,
-      entityType:  "payroll_record",
-      entityId:    "",
-      action:      "PAYROLL_RECORDS_IMPORTED",
+      entityType: "payroll_record",
+      entityId: "",
+      action: "PAYROLL_RECORDS_IMPORTED",
       performedBy: "system",
-      oldValue:    "",
-      newValue:    "",
-      note:        `Imported ${saved} payroll record(s), skipped ${skipped} duplicate(s)`,
+      oldValue: "",
+      newValue: "",
+      note: `Imported ${saved} payroll record(s), skipped ${skipped} duplicate(s)`,
     });
   }
 
   return { saved, skipped };
 }
 
-export async function getPayrollRecords(clientId) {
-  const response = await databases.listDocuments(
-    DB_ID,
-    PAYROLL_COLLECTION_ID,
-    [Query.equal("clientId", clientId), Query.orderDesc("$createdAt"), Query.limit(1000)]
-  );
+export async function getPayrollRecords(clientId, month = null, year = null) {
+  const queries = [Query.equal("clientId", clientId), Query.orderDesc("$createdAt"), Query.limit(1000)];
+  if (month) queries.push(Query.equal("month", month));
+  if (year)  queries.push(Query.equal("year",  year));
+  const response = await databases.listDocuments(DB_ID, PAYROLL_COLLECTION_ID, queries);
   return response.documents;
 }
-
 // ─── Sale Records ─────────────────────────────────────────────────────────────
 
 export async function storeSaleRecords(saleRecords) {
@@ -707,8 +727,12 @@ export async function storeSaleRecords(saleRecords) {
       continue;
     }
     try {
-      await databases.createDocument(DB_ID, SALES_COLLECTION_ID, ID.unique(), record);
-      saved++;
+const { month, year } = getMonthYear(record.saleDate ?? record.sale_date);
+      await databases.createDocument(DB_ID, SALES_COLLECTION_ID, ID.unique(), {
+        ...record,
+        month: month ?? 0,
+        year:  year  ?? 0,
+      });      saved++;
     } catch (err) {
       console.error("storeSaleRecords: failed row", record.saleRowIndex, err.message);
     }
@@ -717,13 +741,13 @@ export async function storeSaleRecords(saleRecords) {
   if (saved > 0) {
     await logAudit({
       clientId,
-      entityType:  "sale_record",
-      entityId:    "",
-      action:      "SALE_RECORDS_IMPORTED",
+      entityType: "sale_record",
+      entityId: "",
+      action: "SALE_RECORDS_IMPORTED",
       performedBy: "system",
-      oldValue:    "",
-      newValue:    "",
-      note:        `Imported ${saved} sale record(s), skipped ${skipped} duplicate(s)`,
+      oldValue: "",
+      newValue: "",
+      note: `Imported ${saved} sale record(s), skipped ${skipped} duplicate(s)`,
     });
   }
 
@@ -734,14 +758,14 @@ export async function updateBankTransaction(txnId, data, clientId, performedBy) 
   const result = await databases.updateDocument(DATABASE_ID, BANK_TRANSACTIONS_COLLECTION_ID, txnId, data);
 
   await logAudit({
-    clientId:    clientId ?? "",
-    entityType:  "bank_transaction",
-    entityId:    txnId,
-    action:      "BANK_TXN_UPDATED",
+    clientId: clientId ?? "",
+    entityType: "bank_transaction",
+    entityId: txnId,
+    action: "BANK_TXN_UPDATED",
     performedBy: performedBy ?? "system",
-    oldValue:    "",
-    newValue:    JSON.stringify(data),
-    note:        `Updated fields: ${Object.keys(data).join(", ")}`,
+    oldValue: "",
+    newValue: JSON.stringify(data),
+    note: `Updated fields: ${Object.keys(data).join(", ")}`,
   });
 
   return result;
@@ -761,25 +785,24 @@ export async function updateSourceDocument(docType, docId, data, clientId, perfo
   const result = await databases.updateDocument(DATABASE_ID, collectionId, docId, data);
 
   await logAudit({
-    clientId:    clientId ?? "",
-    entityType:  `${docType}_record`,
-    entityId:    docId,
-    action:      "SOURCE_DOC_UPDATED",
+    clientId: clientId ?? "",
+    entityType: `${docType}_record`,
+    entityId: docId,
+    action: "SOURCE_DOC_UPDATED",
     performedBy: performedBy ?? "system",
-    oldValue:    "",
-    newValue:    JSON.stringify(data),
-    note:        `Updated ${docType} fields: ${Object.keys(data).join(", ")}`,
+    oldValue: "",
+    newValue: JSON.stringify(data),
+    note: `Updated ${docType} fields: ${Object.keys(data).join(", ")}`,
   });
 
   return result;
 }
 
-export async function getSaleRecords(clientId) {
-  const response = await databases.listDocuments(
-    DB_ID,
-    SALES_COLLECTION_ID,
-    [Query.equal("clientId", clientId), Query.orderDesc("$createdAt"), Query.limit(1000)]
-  );
+export async function getSaleRecords(clientId, month = null, year = null) {
+  const queries = [Query.equal("clientId", clientId), Query.orderDesc("$createdAt"), Query.limit(1000)];
+  if (month) queries.push(Query.equal("month", month));
+  if (year)  queries.push(Query.equal("year",  year));
+  const response = await databases.listDocuments(DB_ID, SALES_COLLECTION_ID, queries);
   return response.documents;
 }
 // ─── Chart of Accounts ────────────────────────────────────────────────────────
@@ -801,14 +824,14 @@ export async function updateCoaAccount(accountId, data, clientId, performedBy) {
   const result = await databases.updateDocument(DB_ID, COA_ACCOUNTS_COLLECTION_ID, accountId, data);
 
   await logAudit({
-    clientId:    clientId ?? "",
-    entityType:  "coa_account",
-    entityId:    accountId,
-    action:      "COA_UPDATED",
+    clientId: clientId ?? "",
+    entityType: "coa_account",
+    entityId: accountId,
+    action: "COA_UPDATED",
     performedBy: performedBy ?? "system",
-    oldValue:    "",
-    newValue:    JSON.stringify(data),
-    note:        `Updated COA account fields: ${Object.keys(data).join(", ")}`,
+    oldValue: "",
+    newValue: JSON.stringify(data),
+    note: `Updated COA account fields: ${Object.keys(data).join(", ")}`,
   });
 
   return result;
