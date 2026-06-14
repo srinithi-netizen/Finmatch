@@ -7,6 +7,7 @@
 
 import * as XLSX from "xlsx";
 import Papa from "papaparse";
+import { convertToINR } from "./currencyUtils";
 
 // ─── Column aliases ────────────────────────────────────────────────────────────
 
@@ -468,6 +469,8 @@ export async function processSalesReportFile(file, clientId, documentRecordId, u
     if (finalSubtotal > 0 && taxAmount > 0) {
       taxRate = parseFloat(((taxAmount / finalSubtotal) * 100).toFixed(2));
     }
+        const fx = await convertToINR(totalAmount, currency, saleDate);
+
 
     // ── Fingerprint ──────────────────────────────────────────────────────────
     const fingerprint = await buildFingerprint(
@@ -520,7 +523,11 @@ export async function processSalesReportFile(file, clientId, documentRecordId, u
       paymentMode,
       paymentStatus,
       currency,
-
+      originalAmount:   fx.originalAmount,
+      originalCurrency: fx.originalCurrency,
+      exchangeRate:     fx.exchangeRate,
+      exchangeRateDate: fx.rateDate,
+      amountINR:        fx.amountINR,
       // Meta
       saleRowIndex:         i + 1,
       matchStatus:          "unmatched",

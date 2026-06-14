@@ -7,7 +7,7 @@
 
 import * as XLSX from "xlsx";
 import Papa from "papaparse";
-
+import { convertToINR } from "./currencyUtils";
 // ─── Column aliases ────────────────────────────────────────────────────────────
 const EXP_ID_ALIASES   = [
   "exp id", "expense id", "expid", "exp no", "expense no",
@@ -459,6 +459,7 @@ console.log("=========================");
     const department      = normalizeText(rawDept);
     const projectCode     = normalizeText(rawProject);
     const currency        = rawCurrency ? String(rawCurrency).trim().toUpperCase() : "INR";
+    const fx = await convertToINR(totalAmount ?? amount, currency, expenseDate);
 
     const fingerprint = await buildFingerprint(
       expenseDate,
@@ -490,6 +491,11 @@ console.log("=========================");
       taxRate:              taxRate     !== null ? taxRate     : 0,
       totalAmount:          totalAmount !== null ? totalAmount : amount,
       currency,
+      originalAmount:   fx.originalAmount,
+      originalCurrency: fx.originalCurrency,
+      exchangeRate:     fx.exchangeRate,
+      exchangeRateDate: fx.rateDate,
+      amountINR:        fx.amountINR,
       paymentMode:          paymentMode || "",
       referenceNumber:      referenceNumber || "",
       approvedBy:           approvedBy  || "",

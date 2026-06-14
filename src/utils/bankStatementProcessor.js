@@ -1,5 +1,8 @@
 import * as XLSX from "xlsx";
 import Papa from "papaparse";
+import { convertToINR } from "./currencyUtils";
+
+const CURRENCY_ALIASES = ["currency", "curr", "ccy"];
 
 // ─── Ref number patterns ───────────────────────────────────────────────────────
 const REF_PATTERNS = [
@@ -300,6 +303,10 @@ export async function processBankStatement(file, clientId, documentRecordId, upl
     const isDuplicate         = seenFingerprints.has(fingerprint);
     const duplicateOfFingerprint = isDuplicate ? fingerprint : null;
     if (!isDuplicate) seenFingerprints.set(fingerprint, i + 1);
+    const colCurrency = findColumn(headers, CURRENCY_ALIASES);
+    const rawCurrency = colCurrency ? r[colCurrency] : null;
+    const currency    = rawCurrency ? String(rawCurrency).trim().toUpperCase() : "INR";
+    const fx = await convertToINR(amount, currency, txnDate);
 
     transactions.push({
       clientId,
@@ -316,7 +323,12 @@ export async function processBankStatement(file, clientId, documentRecordId, upl
       balance:               balance !== null ? balance : 0,
       direction,
       amount,
-      currency:              "INR",
+      currency:              currency,
+      originalAmount:        fx.originalAmount,
+      originalCurrency:      fx.originalCurrency,
+      exchangeRate:          fx.exchangeRate,
+      exchangeRateDate:      fx.rateDate,
+      amountINR:             fx.amountINR,
       bankRowIndex:          i + 1,
       matchStatus:           "unmatched",
       matchedDocumentId:     "",

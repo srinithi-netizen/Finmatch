@@ -112,31 +112,35 @@ const [uploadYear,  setUploadYear]  = useState(() => new Date().getFullYear());
 
   // ── Step 3: Row-level validation ─────────────────────────────────────────────
   const runRowValidation = async () => {
-    setIsProcessing(true);
-    const results = [];
+  setIsProcessing(true);
 
-    for (const pf of pendingFiles) {
-      const ext = pf.name.split(".").pop().toLowerCase();
+  // ✅ Reset anomalies BEFORE processing starts
+  setValidationResults(
+    pendingFiles.map((pf) => ({
+      fileName: pf.name,
+      documentType: pf.documentType,
+      documentTypeLabel:
+        DOCUMENT_TYPES.find((d) => d.value === pf.documentType)?.label ||
+        pf.documentType,
+      errors: [],
+      errorCount: 0,
+      warningCount: 0,
+      totalRows: 0,
+      isProcessed: false, // ← not yet processed
+    }))
+  );
 
-      if (ext === "pdf") {
-        results.push({
-          fileName: pf.name,
-          documentType: pf.documentType,
-          documentTypeLabel:
-            DOCUMENT_TYPES.find((d) => d.value === pf.documentType)?.label ||
-            pf.documentType,
-          errors: [],
-          errorCount: 0,
-          warningCount: 0,
-          totalRows: 0,
-          skipped: true,
-        });
-        continue;
-      }
+  const results = [];
 
+  for (const pf of pendingFiles) {
+    const ext = pf.name.split(".").pop().toLowerCase();
+
+    if (ext === "pdf") {
       try {
-        const parsed = await parseFileToRows(pf.file);
-        const validation = validateRows(pf.documentType, parsed.rows);
+        const parsed = await parseFileToRows(pf.file); // ✅ AFTER processing
+        const validation = validateRows(pf.documentType, parsed.rows, {
+          isProcessed: true,
+        });
         results.push({
           fileName: pf.name,
           documentType: pf.documentType,
@@ -144,6 +148,7 @@ const [uploadYear,  setUploadYear]  = useState(() => new Date().getFullYear());
             DOCUMENT_TYPES.find((d) => d.value === pf.documentType)?.label ||
             pf.documentType,
           ...validation,
+          isProcessed: true,
         });
       } catch (err) {
         results.push({
@@ -157,21 +162,61 @@ const [uploadYear,  setUploadYear]  = useState(() => new Date().getFullYear());
               rowNumber: 0,
               severity: "error",
               field: "file",
-              message: `Failed to parse file: ${err.message}`,
+              message: `Failed to parse PDF: ${err.message}`,
               rowData: "",
             },
           ],
           errorCount: 1,
           warningCount: 0,
           totalRows: 0,
+          isProcessed: true,
         });
       }
+      continue;
     }
 
-    setValidationResults(results);
-    setIsProcessing(false);
-    setStage("validate");
-  };
+    try {
+      const parsed = await parseFileToRows(pf.file); // ✅ AFTER processing
+      const validation = validateRows(pf.documentType, parsed.rows, {
+        isProcessed: true,
+      });
+      results.push({
+        fileName: pf.name,
+        documentType: pf.documentType,
+        documentTypeLabel:
+          DOCUMENT_TYPES.find((d) => d.value === pf.documentType)?.label ||
+          pf.documentType,
+        ...validation,
+        isProcessed: true,
+      });
+    } catch (err) {
+      results.push({
+        fileName: pf.name,
+        documentType: pf.documentType,
+        documentTypeLabel:
+          DOCUMENT_TYPES.find((d) => d.value === pf.documentType)?.label ||
+          pf.documentType,
+        errors: [
+          {
+            rowNumber: 0,
+            severity: "error",
+            field: "file",
+            message: `Failed to parse file: ${err.message}`,
+            rowData: "",
+          },
+        ],
+        errorCount: 1,
+        warningCount: 0,
+        totalRows: 0,
+        isProcessed: true,
+      });
+    }
+  }
+
+  setValidationResults(results);
+  setIsProcessing(false);
+  setStage("validate");
+};
 
   // ── Step 4: Acknowledge → log errors → upload ────────────────────────────────
   const handleAcknowledge = async (acknowledgedMap) => {

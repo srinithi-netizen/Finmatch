@@ -4,8 +4,11 @@
 
 export function detectAnomalies({
   bankTxns = [],
-  sourceDocs = [],
+  sourceDocs = [],       // invoices (kept for backward compatibility)
   dbMatches = [],
+  expenseRecords = [],
+  salesRecords = [],
+  payrollRecords = [],
   clientId = "",
 }) {
   const flags = [];
@@ -33,13 +36,13 @@ export function detectAnomalies({
 
   // Accepted matches grouped by bankTxnId and sourceDocId
   const acceptedMatches = dbMatches.filter((m) =>
-    ["accepted", "manual"].includes(m.status)
+    ["accepted", "manual", "matched"].includes(m.status)
   );
 
-  const matchesByBankTxn  = {};
+  const matchesByBankTxn   = {};
   const matchesBySourceDoc = {};
   for (const m of acceptedMatches) {
-    if (!matchesByBankTxn[m.bankTxnId])   matchesByBankTxn[m.bankTxnId]   = [];
+    if (!matchesByBankTxn[m.bankTxnId])     matchesByBankTxn[m.bankTxnId]     = [];
     if (!matchesBySourceDoc[m.sourceDocId]) matchesBySourceDoc[m.sourceDocId] = [];
     matchesByBankTxn[m.bankTxnId].push(m);
     matchesBySourceDoc[m.sourceDocId].push(m);
@@ -57,7 +60,6 @@ export function detectAnomalies({
   }
 
   // ── 1. DUPLICATE PAYMENT MADE (critical) ─────────────────────────────────
-  // Two accepted bank txns matched to the same sourceDocId within 7 days
   for (const [docId, matches] of Object.entries(matchesBySourceDoc)) {
     if (matches.length < 2) continue;
     for (let i = 0; i < matches.length; i++) {
@@ -81,7 +83,8 @@ export function detectAnomalies({
 
   // ── 2. PAYMENT EXCEEDS INVOICE (critical) ────────────────────────────────
   for (const [docId, matches] of Object.entries(matchesBySourceDoc)) {
-    const doc = sourceDocs.find((d) => d.$id === docId);
+    const doc = sourceDocs.find((d) => d.$id === docId)
+             ?? [...expenseRecords, ...salesRecords, ...payrollRecords].find((d) => d.$id === docId);
     if (!doc) continue;
     const docTotal     = toF(doc.totalAmount ?? doc.amount ?? doc.gross_pay ?? doc.netPay ?? doc.net_pay);
     const totalMatched = matches.reduce((s, m) => s + toF(m.matchedAmount), 0);
@@ -96,19 +99,19 @@ export function detectAnomalies({
   }
 
   // ── 3. PAYROLL PAID TWICE (critical) ─────────────────────────────────────
-  const payrollDocs = sourceDocs.filter((d) => d._docType === "payroll");
+  const payrollDocs = payrollRecords.length ? payrollRecords : sourceDocs.filter((d) => d._docType === "payroll");
   const payrollSeen = {}; // key: employeeId + period
   for (const doc of payrollDocs) {
-    const empId  = doc.employee_id ?? doc.employeeId ?? doc.employeeCode ?? "";
-    const period = doc.payroll_period ?? doc.period ?? doc.payDate ?? doc.pay_date ?? "";
+    const empId  = doc.employeeId ?? doc.employee_id ?? doc.employeeCode ?? "";
+    const period = doc.payDate ?? doc.pay_date ?? doc.payroll_period ?? doc.period ?? "";
     if (!empId || !period) continue;
     const key = `${empId}::${period}`;
     if (payrollSeen[key]) {
       flagOnce({
-        relatedId: doc.$id, relatedType: "source_doc",
+        relatedId: doc.$id, relatedType: "payroll_record",
         flagType: "payroll_paid_twice", severity: "critical",
-        expectedAmount: toF(payrollSeen[key].net_pay ?? payrollSeen[key].netPay),
-        receivedAmount: toF(doc.net_pay ?? doc.netPay),
+        expectedAmount: toF(payrollSeen[key].netPay ?? payrollSeen[key].net_pay),
+        receivedAmount: toF(doc.netPay ?? doc.net_pay),
         differenceAmount: 0,
       });
     } else {
@@ -117,14 +120,12 @@ export function detectAnomalies({
   }
 
   // ── 4. TDS NOT DEDUCTED (critical) ────────────────────────────────────────
-  // Vendor payment above ₹30,000 with no TDS entry
   for (const txn of bankTxns) {
     if (toF(txn.amount) <= 30000) continue;
     if (txn.direction === "credit") continue;
     const desc = (txn.description ?? "").toLowerCase();
     const isVendorPayment = ["vendor", "supplier", "invoice", "purchase", "neft", "rtgs", "transfer"].some((k) => desc.includes(k));
     if (!isVendorPayment) continue;
-    // Check if any source doc for this txn mentions TDS
     const txnMatches = matchesByBankTxn[txn.$id] ?? [];
     const hasTds = txnMatches.some((m) => {
       const doc = sourceDocs.find((d) => d.$id === m.sourceDocId);
@@ -142,16 +143,17 @@ export function detectAnomalies({
   }
 
   // ── 5. DUPLICATE INVOICE (high) ──────────────────────────────────────────
-  const invoices = sourceDocs.filter((d) => d._docType === "invoice");
+  // Two or more invoices with same invoiceNumber (+ vendor if available)
+  const invoices = sourceDocs.filter((d) => d._docType === "invoice" || d.invoiceNumber || d.invoice_number);
   const invoiceSeen = {};
   for (const inv of invoices) {
-    const num    = (inv.invoice_number ?? inv.invoiceNumber ?? "").toLowerCase().replace(/\s/g, "");
+    const num    = (inv.invoiceNumber ?? inv.invoice_number ?? "").toLowerCase().replace(/\s/g, "");
     const vendor = (inv.vendorName ?? inv.vendor_name ?? "").toLowerCase().trim();
-    if (!num || !vendor) continue;
-    const key = `${num}::${vendor}`;
+    if (!num) continue;
+    const key = vendor ? `${num}::${vendor}` : num;
     if (invoiceSeen[key]) {
       flagOnce({
-        relatedId: inv.$id, relatedType: "source_doc",
+        relatedId: inv.$id, relatedType: "invoice",
         flagType: "duplicate_invoice", severity: "high",
         expectedAmount: toF(invoiceSeen[key].totalAmount ?? invoiceSeen[key].amount),
         receivedAmount: toF(inv.totalAmount ?? inv.amount),
@@ -162,19 +164,100 @@ export function detectAnomalies({
     }
   }
 
-  // ── 6. PAYMENT BEFORE INVOICE DATE (high) ────────────────────────────────
+  // ── 6. DUPLICATE EXPENSE (high) - NEW ────────────────────────────────────
+  // Same vendor + same amount + same date (or within 1 day) = likely duplicate entry
+  const expenseSeen = {};
+  for (const exp of expenseRecords) {
+    const vendor = (exp.vendorName ?? exp.vendor_name ?? "").toLowerCase().trim();
+    const amount = toF(exp.totalAmount ?? exp.amount);
+    const date   = exp.expenseDate ?? exp.expense_date;
+    if (!vendor || !amount || !date) continue;
+    const key = `${vendor}::${amount}::${new Date(date).toISOString().slice(0, 10)}`;
+    if (expenseSeen[key]) {
+      flagOnce({
+        relatedId: exp.$id, relatedType: "expense_record",
+        flagType: "duplicate_expense", severity: "high",
+        expectedAmount: toF(expenseSeen[key].totalAmount ?? expenseSeen[key].amount),
+        receivedAmount: amount,
+        differenceAmount: 0,
+      });
+    } else {
+      expenseSeen[key] = exp;
+    }
+  }
+
+  // ── 7. FUTURE DATED EXPENSE (high) - NEW ─────────────────────────────────
+  for (const exp of expenseRecords) {
+    const date = exp.expenseDate ?? exp.expense_date;
+    if (!date) continue;
+    if (new Date(date) > now) {
+      flagOnce({
+        relatedId: exp.$id, relatedType: "expense_record",
+        flagType: "future_dated_expense", severity: "high",
+        expectedAmount: toF(exp.totalAmount ?? exp.amount),
+        receivedAmount: 0,
+        differenceAmount: days(date, now),
+      });
+    }
+  }
+
+  // ── 8. MISSING CUSTOMER NAME IN SALES RECORD (high) - NEW ────────────────
+  for (const sale of salesRecords) {
+    const customer = sale.customerName ?? sale.customer_name;
+    if (!customer || String(customer).trim() === "") {
+      flagOnce({
+        relatedId: sale.$id, relatedType: "sale_record",
+        flagType: "missing_customer_name", severity: "high",
+        expectedAmount: toF(sale.totalAmount ?? sale.amount),
+        receivedAmount: 0, differenceAmount: 0,
+      });
+    }
+  }
+
+  // ── 9. MISSING EXPENSE CATEGORY (high) - NEW ─────────────────────────────
+  for (const exp of expenseRecords) {
+    const category = exp.category;
+    if (!category || String(category).trim() === "") {
+      flagOnce({
+        relatedId: exp.$id, relatedType: "expense_record",
+        flagType: "missing_expense_category", severity: "high",
+        expectedAmount: toF(exp.totalAmount ?? exp.amount),
+        receivedAmount: 0, differenceAmount: 0,
+      });
+    }
+  }
+
+  // ── 10. UNUSUALLY HIGH PAYROLL AMOUNT (high) - NEW ───────────────────────
+  // Flag if netPay > 2x the average netPay across all payroll records
+  if (payrollDocs.length >= 2) {
+    const totalNet = payrollDocs.reduce((s, p) => s + toF(p.netPay ?? p.net_pay), 0);
+    const avgNet   = totalNet / payrollDocs.length;
+    for (const doc of payrollDocs) {
+      const net = toF(doc.netPay ?? doc.net_pay);
+      if (avgNet > 0 && net > avgNet * 2) {
+        flagOnce({
+          relatedId: doc.$id, relatedType: "payroll_record",
+          flagType: "unusually_high_payroll", severity: "high",
+          expectedAmount: avgNet,
+          receivedAmount: net,
+          differenceAmount: net - avgNet,
+        });
+      }
+    }
+  }
+
+  // ── 11. PAYMENT BEFORE INVOICE DATE (high) ────────────────────────────────
   for (const [docId, matches] of Object.entries(matchesBySourceDoc)) {
     const doc = sourceDocs.find((d) => d.$id === docId);
     if (!doc) continue;
-    const docDate = doc.invoice_date ?? doc.invoiceDate ?? doc.expense_date ?? doc.date;
+    const docDate = doc.invoiceDate ?? doc.invoice_date ?? doc.expenseDate ?? doc.expense_date ?? doc.date;
     if (!docDate) continue;
     for (const m of matches) {
       const txn = bankTxns.find((t) => t.$id === m.bankTxnId);
       if (!txn) continue;
       const txnDate = txn.txnDate ?? txn.transaction_date;
       if (!txnDate) continue;
-      if (new Date(txnDate) < new Date(docDate) &&
-          days(txnDate, docDate) > 1) {
+      if (new Date(txnDate) < new Date(docDate) && days(txnDate, docDate) > 1) {
         flagOnce({
           relatedId: txn.$id, relatedType: "bank_txn",
           flagType: "payment_before_invoice_date", severity: "high",
@@ -185,13 +268,12 @@ export function detectAnomalies({
     }
   }
 
-  // ── 7. EXPENSE NO RECEIPT (high) ─────────────────────────────────────────
-  const expenses = sourceDocs.filter((d) => d._docType === "expense");
-  for (const exp of expenses) {
-    const hasReceipt = exp.receipt_ref ?? exp.receiptRef ?? exp.receiptNumber ?? exp.receipt_number;
+  // ── 12. EXPENSE NO RECEIPT (high) ─────────────────────────────────────────
+  for (const exp of expenseRecords) {
+    const hasReceipt = exp.receiptRef ?? exp.receipt_ref ?? exp.receiptNumber ?? exp.receipt_number;
     if (!hasReceipt) {
       flagOnce({
-        relatedId: exp.$id, relatedType: "source_doc",
+        relatedId: exp.$id, relatedType: "expense_record",
         flagType: "expense_no_receipt", severity: "high",
         expectedAmount: toF(exp.totalAmount ?? exp.amount),
         receivedAmount: 0, differenceAmount: 0,
@@ -199,7 +281,7 @@ export function detectAnomalies({
     }
   }
 
-  // ── 8. MISSING REQUIRED FIELD (high) ─────────────────────────────────────
+  // ── 13. MISSING REQUIRED FIELD - BANK TXN (high) ──────────────────────────
   for (const txn of bankTxns) {
     const amt  = toF(txn.amount);
     const date = txn.txnDate ?? txn.transaction_date;
@@ -212,7 +294,7 @@ export function detectAnomalies({
     }
   }
 
-  // ── 9. BANK BALANCE GAP (high) ────────────────────────────────────────────
+  // ── 14. BANK BALANCE GAP (high) ────────────────────────────────────────────
   const sortedTxns = [...bankTxns]
     .filter((t) => t.balance != null)
     .sort((a, b) => new Date(a.txnDate ?? a.transaction_date) - new Date(b.txnDate ?? b.transaction_date));
@@ -234,7 +316,26 @@ export function detectAnomalies({
     }
   }
 
-  // ── 10. CURRENCY MISMATCH (medium) ───────────────────────────────────────
+  // ── 15. SUSPICIOUSLY LARGE BANK TRANSACTION (high) - NEW ─────────────────
+  // Flag any bank transaction whose amount is > 3x the average of all bank transactions
+  if (bankTxns.length >= 2) {
+    const totalAmt = bankTxns.reduce((s, t) => s + Math.abs(toF(t.amount)), 0);
+    const avgAmt   = totalAmt / bankTxns.length;
+    for (const txn of bankTxns) {
+      const amt = Math.abs(toF(txn.amount));
+      if (avgAmt > 0 && amt > avgAmt * 3) {
+        flagOnce({
+          relatedId: txn.$id, relatedType: "bank_txn",
+          flagType: "unusually_large_amount", severity: "high",
+          expectedAmount: avgAmt,
+          receivedAmount: amt,
+          differenceAmount: amt - avgAmt,
+        });
+      }
+    }
+  }
+
+  // ── 16. CURRENCY MISMATCH (medium) ───────────────────────────────────────
   for (const m of acceptedMatches) {
     const txn = bankTxns.find((t) => t.$id === m.bankTxnId);
     const doc = sourceDocs.find((d) => d.$id === m.sourceDocId);
@@ -252,7 +353,7 @@ export function detectAnomalies({
     }
   }
 
-  // ── 11. LOW CONFIDENCE MATCH (medium) ────────────────────────────────────
+  // ── 17. LOW CONFIDENCE MATCH (medium) ────────────────────────────────────
   for (const m of dbMatches.filter((m) => m.status === "ai_suggested" || m.status === "pending_review")) {
     const score = toF(m.confidenceScore);
     if (score >= 0.50 && score <= 0.69) {
@@ -266,12 +367,12 @@ export function detectAnomalies({
     }
   }
 
-  // ── 12. OVERDUE UNMATCHED DOCUMENT (medium) ──────────────────────────────
+  // ── 18. OVERDUE UNMATCHED DOCUMENT (medium) ──────────────────────────────
   for (const doc of sourceDocs) {
-    const dueDate = doc.due_date ?? doc.dueDate;
+    const dueDate = doc.dueDate ?? doc.due_date;
     if (!dueDate) continue;
     if (new Date(dueDate) >= now) continue;
-    const status = (doc.payment_status ?? doc.paymentStatus ?? "").toLowerCase();
+    const status = (doc.paymentStatus ?? doc.payment_status ?? "").toLowerCase();
     if (["paid", "matched"].includes(status)) continue;
     flagOnce({
       relatedId: doc.$id, relatedType: "source_doc",
@@ -282,10 +383,10 @@ export function detectAnomalies({
     });
   }
 
-  // ── 13. PARTIAL MATCH OPEN (medium) ──────────────────────────────────────
+  // ── 19. PARTIAL MATCH OPEN (medium) ──────────────────────────────────────
   for (const doc of sourceDocs) {
-    const dueDate = doc.due_date ?? doc.dueDate;
-    const status  = (doc.payment_status ?? doc.paymentStatus ?? "").toLowerCase();
+    const dueDate = doc.dueDate ?? doc.due_date;
+    const status  = (doc.paymentStatus ?? doc.payment_status ?? "").toLowerCase();
     if (status !== "partially_paid" && status !== "partial") continue;
     if (dueDate && new Date(dueDate) < now) {
       flagOnce({
@@ -298,13 +399,34 @@ export function detectAnomalies({
     }
   }
 
-  // ── 14. AMOUNT MISMATCH SMALL (medium) ───────────────────────────────────
+  // ── 20. INVOICE PAID WITH AMOUNT MISMATCH (medium) - NEW ─────────────────
+  // Specific check: invoice has an accepted match but matched amount differs from invoice total
+  for (const [docId, matches] of Object.entries(matchesBySourceDoc)) {
+    const inv = sourceDocs.find((d) => d.$id === docId && (d._docType === "invoice" || d.invoiceNumber || d.invoice_number));
+    if (!inv) continue;
+    const invTotal = toF(inv.totalAmount ?? inv.amount);
+    const totalMatched = matches.reduce((s, m) => s + toF(m.matchedAmount), 0);
+    if (invTotal === 0) continue;
+    const diff = Math.abs(invTotal - totalMatched);
+    // Trigger if there's any mismatch but it's not already caught by "payment exceeds invoice"
+    if (diff > 0.01 && totalMatched <= invTotal * 1.01) {
+      flagOnce({
+        relatedId: docId, relatedType: "invoice",
+        flagType: "invoice_amount_mismatch", severity: "medium",
+        expectedAmount: invTotal,
+        receivedAmount: totalMatched,
+        differenceAmount: diff,
+      });
+    }
+  }
+
+  // ── 21. AMOUNT MISMATCH SMALL (medium) ───────────────────────────────────
   for (const m of acceptedMatches) {
     const txn = bankTxns.find((t) => t.$id === m.bankTxnId);
     const doc = sourceDocs.find((d) => d.$id === m.sourceDocId);
     if (!txn || !doc) continue;
     const txnAmt = toF(txn.amount);
-    const docAmt = toF(doc.totalAmount ?? doc.amount ?? doc.net_pay ?? doc.netPay);
+    const docAmt = toF(doc.totalAmount ?? doc.amount ?? doc.netPay ?? doc.net_pay);
     if (docAmt === 0) continue;
     const pctDiff = Math.abs(txnAmt - docAmt) / docAmt;
     if (pctDiff >= 0.01 && pctDiff <= 0.05) {
@@ -317,13 +439,13 @@ export function detectAnomalies({
     }
   }
 
-  // ── 15. DATE GAP LARGE (medium) ──────────────────────────────────────────
+  // ── 22. DATE GAP LARGE (medium) ──────────────────────────────────────────
   for (const m of acceptedMatches) {
     const txn = bankTxns.find((t) => t.$id === m.bankTxnId);
     const doc = sourceDocs.find((d) => d.$id === m.sourceDocId);
     if (!txn || !doc) continue;
     const txnDate = txn.txnDate ?? txn.transaction_date;
-    const docDate = doc.invoice_date ?? doc.invoiceDate ?? doc.expense_date ?? doc.date;
+    const docDate = doc.invoiceDate ?? doc.invoice_date ?? doc.expenseDate ?? doc.expense_date ?? doc.date;
     if (!txnDate || !docDate) continue;
     if (new Date(txnDate) > new Date(docDate) && days(txnDate, docDate) > 45) {
       flagOnce({
@@ -335,7 +457,7 @@ export function detectAnomalies({
     }
   }
 
-  // ── 16. UNMATCHED TRANSACTION (low) ──────────────────────────────────────
+  // ── 23. UNMATCHED TRANSACTION (low) ──────────────────────────────────────
   for (const txn of bankTxns) {
     const hasAnyMatch = dbMatches.some((m) => m.bankTxnId === txn.$id);
     const matchStatus = (txn.matchStatus ?? "").toLowerCase();
@@ -349,7 +471,7 @@ export function detectAnomalies({
     }
   }
 
-  // ── 17. OPTIONAL FIELD MISSING (low) ─────────────────────────────────────
+  // ── 24. OPTIONAL FIELD MISSING (low) ─────────────────────────────────────
   for (const txn of bankTxns) {
     const bal = txn.balance ?? txn.balance_after;
     if (bal == null) {

@@ -23,7 +23,49 @@ const MONTHS = {
   jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
   jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11,
 };
+// ─── Doc field helpers (local copies for ollamaSuggestCategory) ──────────────
+function toFloat(v) {
+  if (v === null || v === undefined || v === "") return 0;
+  const n = parseFloat(String(v).replace(/[₹,\s]/g, ""));
+  return isNaN(n) ? 0 : n;
+}
 
+function getDocAmount(doc) {
+  if (!doc) return 0;
+  return toFloat(
+    doc.total ?? doc.amount ?? doc.net_pay ?? doc.netPay ??
+    doc.gross_pay ?? doc.grossPay ?? doc.totalAmount ?? 0
+  );
+}
+
+function getDocLabel(doc) {
+  if (!doc) return "—";
+  return (
+    doc.vendor_name ?? doc.vendorName ??
+    doc.customer_name ?? doc.customerName ??
+    doc.employee_name ?? doc.employeeName ??
+    doc.name ?? doc.description ?? "—"
+  );
+}
+
+// ─── Generic Ollama call (used by ollamaSuggestCategory) ──────────────────────
+async function callOllama(prompt) {
+  const res = await fetch(OLLAMA_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: OLLAMA_MODEL,
+      prompt,
+      stream: false,
+      format: "json",
+      options: { temperature: 0 },
+    }),
+  });
+  if (!res.ok) throw new Error(`Ollama HTTP ${res.status}`);
+  const data = await res.json();
+  try   { return JSON.parse(data.response); }
+  catch { return null; }
+}
 // Parses "01-May-26" or "2026-05-01" or Date objects
 function parseDate(val) {
   if (!val) return null;
@@ -606,7 +648,6 @@ async function reconcile(bankRows, invoiceRows, payrollRows, expenseRows, opts =
   // STAGE 2: Expense <-> Bank matching (amount + date + description similarity)
   // No explicit IDs in bank descriptions, so use fuzzy matching.
   // ----------------------------------------------------------
-
   // 2a: One-to-one (single expense <-> single bank debit)
   // Build ALL plausible (expense, bank) pairs, score them, then assign
   // greedily by score so the *globally* best pairings win — this avoids
@@ -972,5 +1013,4 @@ Respond ONLY with valid JSON, no extra text:
     };
   }
 }
-
-module.exports = { reconcile, normalize, findCombinations, textSimilarity, parseDate, parseAmount };
+export { reconcile, normalize, findCombinations, textSimilarity, parseDate, parseAmount, ollamaSuggestCategory };

@@ -49,6 +49,12 @@ export const ANOMALY_META = {
   optional_field_missing:      { severity: "low",      icon: "📝", label: "Optional Field Missing",        trigger: "A non-mandatory field (balance_after, tax_amount) is null — won't break matching but reduces accuracy",  action: "None required — informational only" },
   duplicate_file_content:      { severity: "low",      icon: "📁", label: "Duplicate File Content",        trigger: "File hash matches a previously uploaded file — rejected at upload stage",                               action: "None — file was already blocked" },
   category_auto_assigned:      { severity: "low",      icon: "🏷️", label: "Category Auto Assigned",       trigger: "AI assigned a category with confidence > 0.85 without accountant review — logged for traceability",     action: "None required — visible for audit" },
+  duplicate_expense:        { severity: "high", icon: "🧾", label: "Duplicate Expense",          trigger: "Same vendor, amount, and date already recorded as an expense",        action: "Verify and remove duplicate entry" },
+future_dated_expense:     { severity: "high", icon: "📅", label: "Future Dated Expense",       trigger: "expense_date is later than today's date",                            action: "Correct the date or confirm it's a planned/advance expense" },
+missing_customer_name:    { severity: "high", icon: "👤", label: "Missing Customer Name",      trigger: "Sales record has no customer_name value",                            action: "Add customer name to the sales record" },
+missing_expense_category: { severity: "high", icon: "🏷️", label: "Missing Expense Category",  trigger: "Expense record has no category assigned",                            action: "Assign a category for accurate reporting" },
+unusually_high_payroll:    { severity: "high", icon: "💵", label: "Unusually High Payroll",     trigger: "Employee's net pay is more than 2x the average net pay across all employees", action: "Confirm pay is correct (bonus, overtime, etc.)" },
+invoice_amount_mismatch:   { severity: "medium", icon: "⚖️", label: "Invoice Amount Mismatch",  trigger: "Matched bank payment amount differs from invoice total amount",       action: "Verify partial payment, discount, or data entry error" },
 };
 
 export const SEV_CONFIG = {

@@ -11,8 +11,11 @@ import {
   storeReviewAction, writeAuditLog, ID,
   updateBankTransaction, updateSourceDocument,
   getCoaAccounts,
+   logAudit,
 } from "../appwrite/config";
 import MonthYearPicker from "../components/MonthYearPicker";
+import { calculateForexForMatch, getForexCoaCode } from "../utils/forexEngine";
+import { ollamaSuggestCategory } from "../utils/reconciliationEngine";
 
 // ─── NO IMPORT from reconciliationEngine — all helpers defined here ───────────
 
@@ -578,7 +581,60 @@ function ConfidenceBar({ score, breakdown, reason }) {
     </div>
   );
 }
+function ForexBadge({ doc, matchedAmount }) {
+  const [fx, setFx] = useState(null);
+  const [loading, setLoading] = useState(false);
 
+  useEffect(() => {
+    if (!doc || !doc.originalCurrency || doc.originalCurrency === "INR") {
+      setFx(null);
+      return;
+    }
+    let cancelled = false;
+    setLoading(true);
+    calculateForexForMatch(doc, toFloat(matchedAmount))
+      .then((r) => { if (!cancelled) setFx(r); })
+      .catch(() => { if (!cancelled) setFx(null); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [doc?.$id, matchedAmount]);
+
+  if (!doc || !doc.originalCurrency || doc.originalCurrency === "INR") return null;
+  if (loading || !fx) {
+    return <div style={{ marginTop: "6px", fontSize: "11px", color: "#9ca3af" }}>Calculating forex impact…</div>;
+  }
+
+  const isGain = fx.gainLossType === "GAIN";
+  const isLoss = fx.gainLossType === "LOSS";
+  const color  = isGain ? "#16a34a" : isLoss ? "#dc2626" : "#6b7280";
+  const bg     = isGain ? "#f0fdf4" : isLoss ? "#fef2f2" : "#f9fafb";
+  const border = isGain ? "#bbf7d0" : isLoss ? "#fecaca" : "#e5e7eb";
+
+  return (
+    <div style={{ marginTop: "6px", padding: "6px 8px", background: bg, border: `1px solid ${border}`, borderRadius: "6px", fontSize: "11px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", color: "#6b7280" }}>
+        <span>Original ({fx.originalCurrency})</span>
+        <span style={{ fontWeight: 700, color: "#374151" }}>
+          {fx.originalCurrency} {Number(fx.originalAmount).toLocaleString("en-IN", { maximumFractionDigits: 2 })}
+        </span>
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", color: "#6b7280" }}>
+        <span>Booked (at doc date rate)</span>
+        <span>₹{Number(fx.bookedAmountINR).toLocaleString("en-IN", { maximumFractionDigits: 2 })}</span>
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", color: "#6b7280" }}>
+        <span>Settled (bank, INR)</span>
+        <span>₹{Number(fx.settledAmountINR).toLocaleString("en-IN", { maximumFractionDigits: 2 })}</span>
+      </div>
+      {fx.gainLossType !== "NONE" && (
+        <div style={{ display: "flex", justifyContent: "space-between", marginTop: "4px", paddingTop: "4px", borderTop: `1px solid ${border}`, fontWeight: 700, color }}>
+          <span>Forex {isGain ? "Gain" : "Loss"}</span>
+          <span>₹{Number(fx.gainLoss).toLocaleString("en-IN", { maximumFractionDigits: 2 })}</span>
+        </div>
+      )}
+    </div>
+  );
+}
 function DocInfoCard({ doc, matchedAmount, remainingDocAmount, currency }) {
   if (!doc) return null;
   if (doc._isMisc) {
@@ -909,10 +965,13 @@ export default function ReconciliationCenter() {
   };
 
   const handleRunReconciliation = async () => {
+    
     setRunning(true); setError(null);
     setProgress({ current: 0, total: 0 });
     setPendingSuggestions({});
     try {
+          const runBatchId = ID.unique(); // ✅ NEW — ties this AI run together in the audit trail
+
       const results = await runReconciliation({
         bankTransactions: bankTxns,
         sourceDocs,
@@ -921,6 +980,7 @@ export default function ReconciliationCenter() {
       const newPending = {};
 for (const r of results) newPending[r.bankTxnId] = r;
 setPendingSuggestions(newPending);
+
 
 // ─── Run Ollama COA categorization for each transaction ───────────────────
 const newCoaSuggestions = {};
@@ -934,10 +994,12 @@ for (const r of results) {
     .filter(Boolean);
 
   const suggestion = await ollamaSuggestCategory(txn, coaAccounts, matchedDocs);
-  if (suggestion) {
+  if (suggestion?.account) {
     newCoaSuggestions[r.bankTxnId] = suggestion;
   }
+  
 }
+
 setOllamaCoaSuggestions(newCoaSuggestions);
 
       const matched     = results.filter((r) => r.matches.length > 0 && r.matches[0].confidence >= 0.75).length;
@@ -993,6 +1055,20 @@ setOllamaCoaSuggestions(newCoaSuggestions);
             ? (typeof suggestion.confidenceBreakdown === "string" ? suggestion.confidenceBreakdown : JSON.stringify(suggestion.confidenceBreakdown))
             : "{}";
 
+          // ── Foreign currency / forex gain-loss calculation ─────────────────
+          let fxResult = null;
+          if (doc.originalCurrency && doc.originalCurrency !== "INR") {
+            try {
+              fxResult = await calculateForexForMatch(doc, matchedAmount);
+            } catch (fxErr) {
+              console.warn("Forex calculation failed for doc", docId, fxErr.message);
+            }
+          }
+          const bookedAmountINR  = fxResult?.bookedAmountINR ?? matchedAmount;
+          const exchangeRateUsed = fxResult && fxResult.originalAmount
+            ? parseFloat((bookedAmountINR / fxResult.originalAmount).toFixed(4))
+            : 1;
+
           matchRowsToStore.push({
             clientId, bankTxnId: selectedTxn.$id, sourceDocId: docId, sourceDocType: doc._docType,
             matchType: realDocIds.length === 1 ? "one_to_one" : "one_to_many",
@@ -1003,9 +1079,18 @@ setOllamaCoaSuggestions(newCoaSuggestions);
             remainingDocAmount: Math.max(0, docRemaining - matchedAmount),
             currencyNote: suggestion?.currencyNote ?? "", reviewedAt: now,
             batchId, coaCode: finalCoaCode ?? "", month: selectedMonth, year: selectedYear,
+            // ── Forex fields ─────────────────────────────────────────────────
+            originalCurrency:  fxResult?.originalCurrency ?? "INR",
+            originalAmount:    fxResult?.originalAmount ?? 0,
+            exchangeRateUsed,
+            bookedAmountINR,
+            forexGainLoss:     fxResult?.gainLoss ?? 0,
+            forexGainLossType: fxResult?.gainLossType ?? "NONE",
           });
         }
       }
+
+      
 
       const remainingBankAmount = Math.max(0, bankAmount - totalMatchedAmount);
       const matchStatus = remainingBankAmount <= 0 ? "matched" : remainingBankAmount < bankAmount ? "partial" : "unmatched";
@@ -1035,6 +1120,29 @@ setOllamaCoaSuggestions(newCoaSuggestions);
             expectedAmount: getDocAmount(doc), receivedAmount: 0, differenceAmount: getDocAmount(doc), batchId,
           });
         });
+      }
+
+     // ── Forex gain/loss anomalies — flag for CPA review/posting ────────────
+      for (const row of matchRowsToStore) {
+        if (row.forexGainLossType && row.forexGainLossType !== "NONE" && row.forexGainLoss > 0.01) {
+          const suggestedCoa = getForexCoaCode(row.forexGainLossType);
+          anomalyRowsToStore.push({
+            clientId,
+            relatedId: row.sourceDocId,
+            relatedType: "source_doc",
+            flagType: row.forexGainLossType === "GAIN" ? "forex_gain" : "forex_loss",
+            severity: "low",
+            status: "open",
+            resolutionNote:
+              `${row.originalCurrency} ${row.originalAmount.toLocaleString("en-IN")} booked at ₹${row.bookedAmountINR.toFixed(2)}, ` +
+              `settled at ₹${row.matchedAmount.toFixed(2)}. Suggested posting: ₹${row.forexGainLoss.toFixed(2)} to COA ${suggestedCoa} ` +
+              `(${row.forexGainLossType === "GAIN" ? "Foreign Exchange Gain" : "Foreign Exchange Loss"}).`,
+            expectedAmount: row.bookedAmountINR,
+            receivedAmount: row.matchedAmount,
+            differenceAmount: row.forexGainLoss,
+            batchId,
+          });
+        }
       }
 
       if (matchRowsToStore.length)   await storeTransactionMatches(matchRowsToStore);
@@ -1405,10 +1513,11 @@ setOllamaCoaSuggestions(newCoaSuggestions);
                                   style={{ marginTop: "6px", fontSize: "11px", color: "#6b7280", background: "none", border: "none", cursor: "pointer", padding: 0, display: "flex", alignItems: "center", gap: "4px" }}>
                                   {isExpanded ? "▲ Hide details" : "▼ View document details"}
                                 </button>
-                                {isExpanded && (
+                               {isExpanded && (
                                   <>
                                     <DocInfoCard doc={doc} matchedAmount={m.matchedAmount} remainingDocAmount={toFloat(m.remainingDocAmount ?? m.remainingDocumentAmount)} currency={selectedTxn.currency} />
                                     {!isMiscEntry && <ConfidenceBar score={m.confidenceScore} breakdown={m.confidenceBreakdown} reason={m.matchReason} />}
+                                    {!isMiscEntry && <ForexBadge doc={doc} matchedAmount={m.matchedAmount} />}
                                   </>
                                 )}
                                 {m.currencyNote && !isMiscEntry && <p style={{ fontSize: "11px", color: "#f97316", marginTop: "4px" }}>⚠ {m.currencyNote}</p>}
@@ -1622,6 +1731,7 @@ setOllamaCoaSuggestions(newCoaSuggestions);
                           </div>
                           <DocInfoCard doc={doc} matchedAmount={m?.matchedAmount} remainingDocAmount={remaining} currency={selectedTxn.currency} />
                           {m && !isMiscExp && <ConfidenceBar score={m.confidenceScore} breakdown={m.confidenceBreakdown} reason={m.matchReason} />}
+                          {!isMiscExp && <ForexBadge doc={doc} matchedAmount={m?.matchedAmount} />}
                         </div>
                       );
                     })()}

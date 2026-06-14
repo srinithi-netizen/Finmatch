@@ -3,10 +3,12 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { useLocation, useParams } from "react-router-dom";
 import ClientLayout from "../components/ClientLayout";
 import AnomalyDashboard from "../components/AnomalyDashboard";
+import { detectAnomalies } from "../utils/anomalyEngine";
 import {
   getBankTransactions, getInvoices, getExpenseRecords,
   getPayrollRecords, getSaleRecords,
   getAnomalyFlags, updateAnomalyFlag, storeReviewAction,
+  getTransactionMatches, storeAnomalyFlags,   // ← add these two
 } from "../appwrite/config";
 
 export default function AnomalyCenter() {
@@ -61,7 +63,51 @@ export default function AnomalyCenter() {
 
   const getBankTxn   = (id) => bankTxns.find((t) => t.$id === id);
   const getSourceDoc = (id) => sourceDocs.find((d) => d.$id === id);
+const [detecting, setDetecting] = useState(false);
 
+const runDetection = async () => {
+  setDetecting(true);
+  setError(null);
+  try {
+    const [txns, invs, exps, pays, sales, matches] = await Promise.all([
+      getBankTransactions(clientId),
+      getInvoices(clientId),
+      getExpenseRecords(clientId),
+      getPayrollRecords(clientId),
+      getSaleRecords(clientId),
+      getTransactionMatches(clientId),
+    ]);
+
+    const allSourceDocs = [
+      ...invs.map((d)  => ({ ...d, _docType: "invoice" })),
+      ...exps.map((d)  => ({ ...d, _docType: "expense" })),
+      ...pays.map((d)  => ({ ...d, _docType: "payroll" })),
+      ...sales.map((d) => ({ ...d, _docType: "sale"    })),
+    ];
+
+    const flags = detectAnomalies({
+      bankTxns: txns,
+      sourceDocs: allSourceDocs,
+      dbMatches: matches,
+      expenseRecords: exps,
+      salesRecords: sales,
+      payrollRecords: pays,
+      clientId,
+    });
+
+    await storeAnomalyFlags(flags, cpaUserId);
+
+    setSuccessMsg(`✓ Detection complete. ${flags.length} anomaly(ies) checked.`);
+    setTimeout(() => setSuccessMsg(null), 5000);
+
+    // Reload anomalies to show new flags
+    await loadAll();
+  } catch (e) {
+    setError(e.message);
+  } finally {
+    setDetecting(false);
+  }
+};
   // ── Single anomaly action ──
   const handleAnomalyAction = async (anomaly, action, note) => {
     setAL(anomaly.$id + "_" + action);
@@ -133,18 +179,24 @@ export default function AnomalyCenter() {
       <div className="max-w-full px-4 py-5 flex flex-col h-[calc(100vh-80px)]">
 
         <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-          <div>
-            <h1 className="text-xl font-semibold text-gray-900">Anomaly Dashboard</h1>
-            <p className="text-xs text-gray-400 mt-0.5">
-              {anomalies.length} total anomalies ·{" "}
-              {anomalies.filter((a) => a.status === "open").length} open
-            </p>
-          </div>
-          <button onClick={loadAll}
-            className="px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-600 text-xs font-medium rounded-lg border border-gray-200">
-            ↻ Refresh
-          </button>
-        </div>
+  <div>
+    <h1 className="text-xl font-semibold text-gray-900">Anomaly Dashboard</h1>
+    <p className="text-xs text-gray-400 mt-0.5">
+      {anomalies.length} total anomalies ·{" "}
+      {anomalies.filter((a) => a.status === "open").length} open
+    </p>
+  </div>
+  <div className="flex gap-2">
+    <button onClick={runDetection} disabled={detecting}
+      className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium rounded-lg disabled:opacity-50">
+      {detecting ? "Scanning…" : "🔍 Run Anomaly Detection"}
+    </button>
+    <button onClick={loadAll}
+      className="px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-600 text-xs font-medium rounded-lg border border-gray-200">
+      ↻ Refresh
+    </button>
+  </div>
+</div>
 
         {error && (
           <div className="mb-3 p-3 bg-red-50 border border-red-200 text-red-700 rounded-lg text-sm flex gap-2">

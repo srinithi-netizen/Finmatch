@@ -29,17 +29,19 @@ const FIELD_CONFIG = {
     fields: ["txnDate", "description", "amount", "debit", "credit", "currency", "direction"],
   },
   invoice: {
-    fields: ["invoiceNumber", "invoiceDate", "vendorName", "customerName", "totalAmount", "amountPaid", "amountDue", "paymentStatus"],
-  },
-  expense: {
-    fields: ["expenseId", "expenseDate", "vendorName", "amount", "totalAmount", "paymentStatus"],
-  },
+  fields: ["invoiceNumber", "invoiceDate", "vendorName", "customerName", "totalAmount", "originalCurrency", "exchangeRate", "amountINR", "amountPaid", "amountDue", "paymentStatus"],
+},
+sale: {
+  fields: ["saleId", "saleDate", "customerName", "totalAmount", "originalCurrency", "exchangeRate", "amountINR", "paymentMode"],
+},
+expense: {
+  fields: ["expenseId", "expenseDate", "vendorName", "amount", "originalCurrency", "exchangeRate", "amountINR", "totalAmount", "paymentStatus"],
+},
+
   payroll: {
     fields: ["employeeId", "employeeName", "payDate", "netPay", "paymentStatus"],
   },
-  sale: {
-    fields: ["saleId", "saleDate", "customerName", "totalAmount", "paymentMode"],
-  },
+ 
 };
 
 // Friendlier column headers
@@ -68,6 +70,9 @@ const FIELD_LABELS = {
   saleId: "Sale ID",
   saleDate: "Date",
   paymentMode: "Payment Mode",
+  originalCurrency: "Currency",
+exchangeRate: "Exchange Rate",
+amountINR: "Amount (INR)",
 };
 
 // Enum-style fields → render as a dropdown instead of free text

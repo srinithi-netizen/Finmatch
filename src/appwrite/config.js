@@ -1,5 +1,5 @@
 import { Client, Databases, Storage, ID, Query } from "appwrite";
-
+import { FOREX_COA_CODES } from "../utils/forexEngine";
 const client = new Client();
 
 client
@@ -42,6 +42,9 @@ export function getMonthYear(dateStr) {
     return { month: null, year: null };
   }
 }
+
+
+
 // ─── Centralized Audit Helper ─────────────────────────────────────────────────
 export async function logAudit({ clientId, entityType, entityId, action, performedBy, oldValue, newValue, note }) {
   if (!performedBy || performedBy === "system") return;
@@ -90,9 +93,71 @@ function sanitizeMatchRow(row) {
     reviewedAt: String(row.reviewedAt ?? ""),
     batchId: String(row.batchId ?? ""),
     coaCode: String(row.coaCode ?? ""),  
-     month:               row.month != null ? parseInt(row.month) : 0,
-    year:                row.year  != null ? parseInt(row.year)  : 0, // ← ADDED
+    originalCurrency:  String(row.originalCurrency ?? "INR"),
+    originalAmount:    parseFloat(row.originalAmount ?? 0),
+    exchangeRateUsed:  parseFloat(row.exchangeRateUsed ?? 1),
+    forexGainLoss:     parseFloat(row.forexGainLoss ?? 0),
+    forexGainLossType: String(row.forexGainLossType ?? "NONE"),
+    month:               row.month != null ? parseInt(row.month) : 0,
+    year:                row.year  != null ? parseInt(row.year)  : 0,
+
   };
+}
+// ─── Forex COA Seeding ─────────────────────────────────────────────────────
+export async function ensureForexCoaAccounts(performedBy = "system") {
+  const existing = await getCoaAccounts();
+  const codes = existing.map((a) => a.account_code);
+
+  const seedAccounts = [
+    {
+      account_code: FOREX_COA_CODES.GAIN,
+      account_name: "Foreign Exchange Gain",
+      account_type: "Revenue",
+      category: "Other Income",
+      sub_category: "Foreign Exchange",
+      description: "Realized gains from currency rate fluctuations on foreign-currency transactions",
+      normal_balance: "Credit",
+      is_active: true,
+      is_system: true,
+      allow_direct_posting: true,
+      currency: "INR",
+      parent_account_code: null,
+      financial_statement: "Profit & Loss",
+      tax_category: "Non Taxable",
+    },
+    {
+      account_code: FOREX_COA_CODES.LOSS,
+      account_name: "Foreign Exchange Loss",
+      account_type: "Expense",
+      category: "Operating Expenses",
+      sub_category: "Foreign Exchange",
+      description: "Realized losses from currency rate fluctuations on foreign-currency transactions",
+      normal_balance: "Debit",
+      is_active: true,
+      is_system: true,
+      allow_direct_posting: true,
+      currency: "INR",
+      parent_account_code: null,
+      financial_statement: "Profit & Loss",
+      tax_category: "Non Taxable",
+    },
+  ];
+
+  for (const acc of seedAccounts) {
+    if (!codes.includes(acc.account_code)) {
+      const doc = await databases.createDocument(DB_ID, COA_ACCOUNTS_COLLECTION_ID, ID.unique(), acc);
+      await logAudit({
+        clientId: "",
+        entityType: "coa_account",
+        entityId: doc.$id,
+        action: "COA_SEEDED",
+        performedBy,
+        oldValue: "",
+        newValue: JSON.stringify(acc),
+        note: `Seeded system COA account ${acc.account_code} - ${acc.account_name}`,
+      });
+    }
+  }
 }
 
 export async function storeTransactionMatches(matches, performedBy) {

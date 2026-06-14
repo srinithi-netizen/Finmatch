@@ -636,12 +636,28 @@ export const DOCUMENT_TYPES = [
 
 /**
  * Validates parsed rows against the rules for the given document type.
+ * Should ONLY be called AFTER file parsing/processing has completed.
+ *
  * @param {string} documentType - one of DOCUMENT_TYPES values
- * @param {object[]} rows - array of row objects (from fileParser)
+ * @param {object[]|null|undefined} rows - array of row objects (from fileParser), or null/undefined if not yet processed
+ * @param {object} [options]
+ * @param {boolean} [options.isProcessed=true] - set false while parsing is still in progress
  * @returns {{ errors: Array, errorCount: number, warningCount: number, totalRows: number }}
  */
-export function validateRows(documentType, rows) {
-  // Revenue report uses the same rules as sales report
+export function validateRows(documentType, rows, options = {}) {
+  const { isProcessed = true } = options;
+
+  // 1. Guard: file not yet processed -> no anomalies yet
+  if (!isProcessed) {
+    return { errors: [], errorCount: 0, warningCount: 0, totalRows: 0 };
+  }
+
+  // 2. Guard: rows not yet available (null/undefined) -> processing hasn't completed
+  if (rows == null) {
+    return { errors: [], errorCount: 0, warningCount: 0, totalRows: 0 };
+  }
+
+  // 3. Guard: unknown document type
   const type = documentType === "revenue_report" ? "sales_report" : documentType;
   const validator = VALIDATORS[type];
 
@@ -650,10 +666,12 @@ export function validateRows(documentType, rows) {
       errors: [{ rowNumber: 0, severity: "error", field: "documentType", message: `Unknown document type: "${documentType}".`, rowData: "" }],
       errorCount: 1,
       warningCount: 0,
-      totalRows: rows ? rows.length : 0,
+      totalRows: rows.length,
     };
   }
 
+  // 4. NOW it's safe to check for empty rows / missing headers,
+  //    because parsing (including multi-row header detection) has completed.
   const { errors } = validator(rows);
 
   const errorCount = errors.filter((e) => e.severity === "error").length;

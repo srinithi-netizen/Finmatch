@@ -4,7 +4,7 @@
 
 import * as XLSX from "xlsx";
 import Papa from "papaparse";
-
+import { convertToINR } from "./currencyUtils";
 // ─── Invoice number patterns ───────────────────────────────────────────────────
 const INVOICE_NUMBER_PATTERNS = [
   /\b(INV[-\/]?\d{2,10})\b/i,
@@ -376,7 +376,7 @@ export async function processInvoiceFile(file, clientId, documentRecordId, uploa
 
     const description = normalizeText(rawDesc);
     const currency    = rawCurrency ? String(rawCurrency).trim().toUpperCase() : "INR";
-
+    const fx = await convertToINR(totalAmount, currency, invoiceDate);
     const fingerprint = await buildFingerprint(
       invoiceNumberNormalized, invoiceDate, totalAmount,
       vendorNameNormalized, customerNameNormalized
@@ -406,6 +406,11 @@ export async function processInvoiceFile(file, clientId, documentRecordId, uploa
       amountPaid:              amountPaid   ?? 0,
       amountDue:               amountDue    ?? totalAmount,
       currency,
+      originalAmount:   fx.originalAmount,
+      originalCurrency: fx.originalCurrency,
+      exchangeRate:     fx.exchangeRate,
+      exchangeRateDate: fx.rateDate,
+      amountINR:        fx.amountINR,
       lineItems:               "",
       invoiceRowIndex:         i + 1,
       matchStatus:             "unmatched",
