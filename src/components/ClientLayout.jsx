@@ -42,6 +42,11 @@ export default function ClientLayout({ client, children }) {
     icon: "🔄",
     path: `/client-dashboard/${client.$id}/reconciliation`,
   },
+  {
+  name: "Edit Records",
+  icon: "✏️",
+  path: `/client-dashboard/${client.$id}/edit-records`,
+},
 ];
 
   return (

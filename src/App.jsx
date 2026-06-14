@@ -10,6 +10,7 @@ import ChartOfAccounts from "./pages/ChartOfAccounts";
 import AuditHistory from "./pages/AuditHistory";
 import AnomalyCenter from "./pages/AnomalyCenter";
 import TransactionPage from "./pages/TransactionPage";
+import EditFinancialRecordsPage from "./pages/EditFinancialRecordsPage";
 
 function PrivateRoute({ children }) {
   return sessionStorage.getItem("cpa_logged_in")
@@ -91,6 +92,7 @@ export default function App() {
     </PrivateRoute>
   }
 />
+<Route path="/client-dashboard/:clientId/edit-records" element={<EditFinancialRecordsPage />} />
 <Route path="/client-dashboard/:id/anomalies" element={<AnomalyCenter />} />
        
       </Routes>

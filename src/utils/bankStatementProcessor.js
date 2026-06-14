@@ -1,10 +1,3 @@
-/**
- * bankStatementProcessor.js
- * Parses a bank statement XLSX/CSV, extracts transactions,
- * normalizes fields, generates SHA-256 fingerprints,
- * and returns structured transaction objects ready for Appwrite.
- */
-
 import * as XLSX from "xlsx";
 import Papa from "papaparse";
 
@@ -21,7 +14,7 @@ const REF_PATTERNS = [
   /\b(UPI[\/\-]?\w{6,20})\b/i,
   /\b(CHQ[\/\-\s]?\d{4,9})\b/i,
   /\b(REF[\/\-\s]?\w{4,20})\b/i,
-  /\b(\d{10,20})\b/,           // long numeric refs (UTR, etc.)
+  /\b(\d{10,20})\b/,
 ];
 
 // ─── Amount parsing ────────────────────────────────────────────────────────────
@@ -44,7 +37,6 @@ function parseAmount(val) {
 function normalizeDate(val) {
   if (!val && val !== 0) return null;
 
-  // Excel serial number
   if (typeof val === "number") {
     const epoch = new Date(Date.UTC(1899, 11, 30));
     const d = new Date(epoch.getTime() + val * 86400000);
@@ -59,22 +51,18 @@ function normalizeDate(val) {
 
   const str = String(val).trim();
 
-  // YYYY-MM-DD
   let m = str.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
   if (m) return `${m[1]}-${m[2].padStart(2,"0")}-${m[3].padStart(2,"0")}`;
 
-  // DD/MM/YYYY or DD-MM-YYYY
   m = str.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
   if (m) {
     const [, a, b, y] = m;
-    // try DD/MM/YYYY
     const d = new Date(Date.UTC(Number(y), Number(b) - 1, Number(a)));
     if (!isNaN(d.getTime()) && d.getUTCMonth() === Number(b) - 1) {
       return `${y}-${b.padStart(2,"0")}-${a.padStart(2,"0")}`;
     }
   }
 
-  // DD-Mon-YY e.g. 01-May-26
   m = str.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/);
   if (m) {
     const months = {jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12};
@@ -94,7 +82,7 @@ function normalizeDescription(desc) {
   if (!desc) return "";
   return String(desc)
     .replace(/\s+/g, " ")
-    .replace(/[^\x20-\x7E\u00A0-\uFFFF]/g, "") // strip control chars
+    .replace(/[^\x20-\x7E\u00A0-\uFFFF]/g, "")
     .trim();
 }
 
@@ -139,18 +127,22 @@ async function buildFingerprint(txnDate, amount, refNumber, descNorm, direction)
   return sha256(parts.join("|"));
 }
 
-// ─── Header detection (scan first 15 rows) ────────────────────────────────────
-const DATE_ALIASES       = ["date", "txn date", "transaction date", "value date", "posting date", "entry date"];
-const DESC_ALIASES       = ["description", "particulars", "narration", "details", "remarks", "transaction details", "note"];
-const DEBIT_ALIASES      = ["debit", "withdrawal", "dr", "debit amount", "debit (₹)", "debit(₹)"];
-const CREDIT_ALIASES     = ["credit", "deposit", "cr", "credit amount", "credit (₹)", "credit(₹)"];
-const BALANCE_ALIASES    = ["balance", "running balance", "closing balance", "balance (₹)", "balance(₹)"];
-const AMOUNT_ALIASES     = ["amount", "amt", "value", "transaction amount", "amount (₹)"];
-const REF_ALIASES        = ["ref", "ref no", "reference", "reference number", "chq no", "cheque no", "transaction id", "txn id", "utr"];
-const VALUEDATE_ALIASES  = ["value date", "val date"];
+// ─── Header aliases ────────────────────────────────────────────────────────────
+const DATE_ALIASES      = ["date", "txn date", "transaction date", "value date", "posting date", "entry date"];
+const DESC_ALIASES      = ["description", "particulars", "narration", "details", "remarks", "transaction details", "note"];
+const DEBIT_ALIASES     = ["debit", "withdrawal", "dr", "debit amount", "debit (₹)", "debit(₹)"];
+const CREDIT_ALIASES    = ["credit", "deposit", "cr", "credit amount", "credit (₹)", "credit(₹)"];
+const BALANCE_ALIASES   = ["balance", "running balance", "closing balance", "balance (₹)", "balance(₹)"];
+const AMOUNT_ALIASES    = ["amount", "amt", "value", "transaction amount", "amount (₹)"];
+const REF_ALIASES       = ["ref", "ref no", "reference", "reference number", "chq no", "cheque no", "transaction id", "txn id", "utr"];
+const VALUEDATE_ALIASES = ["value date", "val date"];
 
 function normalizeH(h) {
-  return String(h).trim().toLowerCase().replace(/\s+/g, " ").replace(/[\(（][^)）]*[\)）]/g, "").replace(/[₹$€£]/g, "").trim();
+  return String(h).trim().toLowerCase()
+    .replace(/\s+/g, " ")
+    .replace(/[\(（][^)）]*[\)）]/g, "")
+    .replace(/[₹$€£]/g, "")
+    .trim();
 }
 
 function findColumn(headers, aliases) {
@@ -165,44 +157,51 @@ function scoreRow(rowArr) {
   return rowArr.filter((c) => allAliases.includes(normalizeH(String(c)))).length;
 }
 
-// ─── Parse XLSX/CSV to raw rows ────────────────────────────────────────────────
+// ─── getRawRows — CSV / XLSX / PDF → string[][] ────────────────────────────────
+function parseCsvRaw(file) {
+  return new Promise((resolve, reject) => {
+    Papa.parse(file, {
+      header: false,
+      skipEmptyLines: true,
+      complete: (r) => resolve(r.data.map((row) => row.map((c) => String(c)))),
+      error:   (e) => reject(e),
+    });
+  });
+}
+
+async function parseExcelRaw(file) {
+  const buffer = await file.arrayBuffer();
+  const wb = XLSX.read(buffer, { type: "array" });
+  if (!wb.SheetNames.length) return [];
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  return XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
+}
+
 async function getRawRows(file) {
   const ext = file.name.split(".").pop().toLowerCase();
 
-  if (ext === "csv") {
-    return new Promise((resolve, reject) => {
-      Papa.parse(file, {
-        header: false,
-        skipEmptyLines: false,
-        complete: (r) => resolve(r.data),
-        error: reject,
-      });
-    });
+  if (ext === "csv")                   return parseCsvRaw(file);
+  if (ext === "xlsx" || ext === "xls") return parseExcelRaw(file);
+
+  if (ext === "pdf") {
+    // Import fileParser which handles pdfjs-dist (browser-safe)
+    const { parseFileToRows } = await import("./fileParser.js");
+    const { headers, rows } = await parseFileToRows(file);
+    // Convert object[] back to string[][] so the rest of this processor works unchanged
+    return [
+      headers,
+      ...rows.map((r) => headers.map((h) => String(r[h] ?? ""))),
+    ];
   }
 
-  if (ext === "xlsx" || ext === "xls") {
-    const buffer = await file.arrayBuffer();
-    const wb = XLSX.read(buffer, { type: "array" });
-    const ws = wb.Sheets[wb.SheetNames[0]];
-    return XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
-  }
-
-  throw new Error("Unsupported file type: " + ext);
+  throw new Error(`Unsupported file type: ${ext}`);
 }
 
 // ─── Main export ───────────────────────────────────────────────────────────────
-/**
- * @param {File}   file
- * @param {string} clientId
- * @param {string} documentRecordId  — the $id from uploaded_documents
- * @param {string} uploadBatchId
- * @returns {Promise<{ transactions: object[], warnings: string[] }>}
- */
 export async function processBankStatement(file, clientId, documentRecordId, uploadBatchId) {
   const rawRows = await getRawRows(file);
   const warnings = [];
 
-  // ── Find header row ──────────────────────────────────────────────────────────
   const scanLimit = Math.min(20, rawRows.length);
   let headerRowIdx = 0;
   let bestScore = -1;
@@ -218,7 +217,6 @@ export async function processBankStatement(file, clientId, documentRecordId, upl
 
   const headers = rawRows[headerRowIdx].map(String);
 
-  // ── Map columns ──────────────────────────────────────────────────────────────
   const colDate      = findColumn(headers, DATE_ALIASES);
   const colDesc      = findColumn(headers, DESC_ALIASES);
   const colDebit     = findColumn(headers, DEBIT_ALIASES);
@@ -232,15 +230,13 @@ export async function processBankStatement(file, clientId, documentRecordId, upl
   if (!colDesc)  warnings.push("Description column not detected.");
   if (!colDebit && !colCredit && !colAmount) warnings.push("No amount/debit/credit columns detected.");
 
-  // ── Process data rows ────────────────────────────────────────────────────────
   const transactions = [];
-  const seenFingerprints = new Map(); // fingerprint → bankRowIndex (for duplicate detection)
+  const seenFingerprints = new Map();
 
   for (let i = headerRowIdx + 1; i < rawRows.length; i++) {
     const row = rawRows[i];
     if (!row || row.every((c) => c === "" || c === null || c === undefined)) continue;
 
-    // Build a keyed row object
     const r = {};
     headers.forEach((h, idx) => { r[h] = row[idx] !== undefined ? row[idx] : ""; });
 
@@ -253,35 +249,31 @@ export async function processBankStatement(file, clientId, documentRecordId, upl
     const rawRef     = colRef       ? r[colRef]       : null;
     const rawValDate = colValueDate ? r[colValueDate] : null;
 
-    // Skip rows that have no date AND no amount (likely footer/summary rows)
-    const hasDate   = rawDate   !== null && String(rawDate).trim()   !== "";
-    const hasAmount = (rawDebit !== null && String(rawDebit).trim()  !== "") ||
-                      (rawCredit!== null && String(rawCredit).trim() !== "") ||
-                      (rawAmount!== null && String(rawAmount).trim() !== "");
+    const hasDate   = rawDate !== null && String(rawDate).trim() !== "";
+    const hasAmount = (rawDebit  !== null && String(rawDebit).trim()  !== "") ||
+                      (rawCredit !== null && String(rawCredit).trim() !== "") ||
+                      (rawAmount !== null && String(rawAmount).trim() !== "");
     if (!hasDate && !hasAmount) continue;
 
-    // ── Field extraction ─────────────────────────────────────────────────────
     const txnDate   = normalizeDate(rawDate);
     const valueDate = rawValDate ? normalizeDate(rawValDate) : null;
     const desc      = normalizeDescription(rawDesc);
     const descNorm  = normalizeDescriptionForFingerprint(rawDesc);
 
-    // Amount resolution: prefer debit/credit columns over a single amount column
-    let debit   = parseAmount(rawDebit);
-    let credit  = parseAmount(rawCredit);
-    let balance = parseAmount(rawBalance);
-    let amount  = null;
+    let debit     = parseAmount(rawDebit);
+    let credit    = parseAmount(rawCredit);
+    let balance   = parseAmount(rawBalance);
+    let amount    = null;
     let direction = "UNKNOWN";
 
     if (colDebit || colCredit) {
-      debit   = debit   !== null && debit   > 0 ? debit   : null;
-      credit  = credit  !== null && credit  > 0 ? credit  : null;
-      if (debit  !== null && credit === null) { amount = debit;  direction = "DR"; }
-      if (credit !== null && debit  === null) { amount = credit; direction = "CR"; }
-      if (debit  !== null && credit !== null) {
-        // Both populated — take the larger; flag warning
+      debit  = debit  !== null && debit  > 0 ? debit  : null;
+      credit = credit !== null && credit > 0 ? credit : null;
+      if (debit !== null && credit === null) { amount = debit;  direction = "DR"; }
+      if (credit !== null && debit === null) { amount = credit; direction = "CR"; }
+      if (debit !== null && credit !== null) {
         amount    = Math.max(debit, credit);
-        direction = "DR"; // conservative assumption
+        direction = "DR";
         warnings.push(`Row ${i + 1}: Both debit and credit populated. Check manually.`);
       }
       if (debit === null && credit === null) {
@@ -295,54 +287,48 @@ export async function processBankStatement(file, clientId, documentRecordId, upl
       direction = raw !== null ? (raw < 0 ? "DR" : "CR") : "UNKNOWN";
     }
 
-    // Ref number: first check dedicated ref column, then scan description
-    const refFromCol  = rawRef ? String(rawRef).trim().replace(/\s+/g,"") : null;
+    const refFromCol  = rawRef ? String(rawRef).trim().replace(/\s+/g, "") : null;
     const refFromDesc = extractRefNumber(desc);
-    const refNumber   = (refFromCol && refFromCol !== "") ? refFromCol.toUpperCase() : refFromDesc;
+    const refNumber   = refFromCol && refFromCol !== "" ? refFromCol.toUpperCase() : refFromDesc;
 
-    // Skip rows with no usable amount (footer total rows, etc.)
     if (amount === null || amount === 0) {
       warnings.push(`Row ${i + 1}: Skipped — no valid amount found.`);
       continue;
     }
 
-    // ── Fingerprint ──────────────────────────────────────────────────────────
-    const fingerprint = await buildFingerprint(txnDate, amount, refNumber, descNorm, direction);
-
-    // ── Duplicate detection ──────────────────────────────────────────────────
-    const isDuplicate = seenFingerprints.has(fingerprint);
+    const fingerprint         = await buildFingerprint(txnDate, amount, refNumber, descNorm, direction);
+    const isDuplicate         = seenFingerprints.has(fingerprint);
     const duplicateOfFingerprint = isDuplicate ? fingerprint : null;
     if (!isDuplicate) seenFingerprints.set(fingerprint, i + 1);
 
-    // ── Build transaction object ─────────────────────────────────────────────
     transactions.push({
       clientId,
       documentRecordId,
       uploadBatchId,
       fingerprint,
-      txnDate:                  txnDate  || "",
-      valueDate:                valueDate || "",
-      description:              desc,
-      descriptionNormalized:    descNorm,
-      refNumber:                refNumber || "",
-      debit:                    debit  !== null ? debit  : 0,
-      credit:                   credit !== null ? credit : 0,
-      balance:                  balance !== null ? balance : 0,
+      txnDate:               txnDate   || "",
+      valueDate:             valueDate || "",
+      description:           desc,
+      descriptionNormalized: descNorm,
+      refNumber:             refNumber || "",
+      debit:                 debit   !== null ? debit   : 0,
+      credit:                credit  !== null ? credit  : 0,
+      balance:               balance !== null ? balance : 0,
       direction,
       amount,
-      currency:                 "INR",
-      bankRowIndex:             i + 1,
-      matchStatus:              "unmatched",
-      matchedDocumentId:        "",
-      reconciliationStatus:     "pending",
-      processingStatus:         isDuplicate ? "duplicate" : "processed",
-      processingNotes:          isDuplicate
-                                  ? `Duplicate of row ${seenFingerprints.get(fingerprint)}`
-                                  : "",
+      currency:              "INR",
+      bankRowIndex:          i + 1,
+      matchStatus:           "unmatched",
+      matchedDocumentId:     "",
+      reconciliationStatus:  "pending",
+      processingStatus:      isDuplicate ? "duplicate" : "processed",
+      processingNotes:       isDuplicate
+                               ? `Duplicate of row ${seenFingerprints.get(fingerprint)}`
+                               : "",
       isDuplicate,
-      duplicateOfFingerprint:   duplicateOfFingerprint || "",
-      sourceFileName:           file.name,
-      documentType:             "bank_statement",
+      duplicateOfFingerprint: duplicateOfFingerprint || "",
+      sourceFileName:         file.name,
+      documentType:           "bank_statement",
     });
   }
 
