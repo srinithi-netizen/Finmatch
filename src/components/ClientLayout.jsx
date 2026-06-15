@@ -135,24 +135,28 @@ const styles = {
   },
 
   mainLayout: {
-    display: "flex",
+   display: "flex",
+  minHeight: "calc(100vh - 70px)",
   },
 
   sidebar: {
-    width: "240px",
-    minHeight: "calc(100vh - 70px)",
-    background: "#FFFFFF",
-    borderRight: "1px solid #E2E8F0",
-    paddingTop: "20px",
+      width: "300px", // was 240px
+  minHeight: "calc(100vh - 70px)",
+  background: "#FFFFFF",
+  borderRight: "1px solid #E2E8F0",
+  paddingTop: "24px",
+  flexShrink: 0,
   },
 
   sidebarItem: {
     display: "flex",
-    gap: "12px",
-    padding: "14px 20px",
-    cursor: "pointer",
-    color: "#334155",
-    fontWeight: "500",
+  alignItems: "center",
+  gap: "14px",
+  padding: "18px 24px", // bigger
+  cursor: "pointer",
+  color: "#334155",
+  fontWeight: "500",
+  fontSize: "15px",
   },
 
   activeSidebarItem: {
@@ -163,7 +167,9 @@ const styles = {
   },
 
   content: {
-    flex: 1,
-    padding: "32px",
+      flex: 1,
+  minWidth: 0, // IMPORTANT
+  padding: "32px",
+  overflow: "hidden",
   },
 };
