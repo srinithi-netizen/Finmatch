@@ -24,7 +24,8 @@ const INV_NUMBER_ALIASES = [
   "invoice id", "bill number", "bill no", "voucher no", "voucher number",
   "doc no", "document number", "invoice no.", "inv no.",
 ];
-
+const EXCHANGE_RATE_ALIASES = ["exchange rate", "exchangerate", "rate", "fx rate"];
+const BOOKED_AMOUNT_INR_ALIASES = ["bookedamountinr", "booked amount inr", "amount inr", "inr amount"];
 const INV_DATE_ALIASES = [
   "invoice date", "bill date", "date", "inv date", "document date",
   "txn date", "transaction date",
@@ -286,6 +287,8 @@ export async function processInvoiceFile(file, clientId, documentRecordId, uploa
   const colAmtPaid  = findColumn(headers, AMOUNT_PAID_ALIASES);
   const colAmtDue   = findColumn(headers, AMOUNT_DUE_ALIASES);
   const colCurrency = findColumn(headers, CURRENCY_ALIASES);
+  const colExchangeRate = findColumn(headers, EXCHANGE_RATE_ALIASES);
+const colBookedINR    = findColumn(headers, BOOKED_AMOUNT_INR_ALIASES);
 
   // Log what was detected (helps debug future issues)
   console.log("[invoiceProcessor] Sheet headers:", headers);
@@ -320,7 +323,8 @@ export async function processInvoiceFile(file, clientId, documentRecordId, uploa
     const rawAmtPaid  = colAmtPaid  ? r[colAmtPaid]  : null;
     const rawAmtDue   = colAmtDue   ? r[colAmtDue]   : null;
     const rawCurrency = colCurrency ? r[colCurrency] : null;
-
+const rawExchangeRate = colExchangeRate ? r[colExchangeRate] : null;
+const rawBookedINR    = colBookedINR    ? r[colBookedINR]    : null;
     const hasInvNum = rawInvNum !== null && String(rawInvNum).trim() !== "";
     const hasTotal  = rawTotal  !== null && String(rawTotal).trim()  !== "";
     if (!hasInvNum && !hasTotal) continue;
@@ -376,8 +380,29 @@ export async function processInvoiceFile(file, clientId, documentRecordId, uploa
 
     const description = normalizeText(rawDesc);
     const currency    = rawCurrency ? String(rawCurrency).trim().toUpperCase() : "INR";
-    const fx = await convertToINR(totalAmount, currency, invoiceDate);
-    const fingerprint = await buildFingerprint(
+const suppliedRate = parseAmount(rawExchangeRate);
+const suppliedBookedINR = parseAmount(rawBookedINR);
+
+let fx;
+if (suppliedBookedINR !== null && suppliedBookedINR > 0) {
+  fx = {
+    originalAmount: totalAmount,
+    originalCurrency: currency,
+    exchangeRate: suppliedRate !== null ? suppliedRate : parseFloat((suppliedBookedINR / totalAmount).toFixed(4)),
+    rateDate: invoiceDate,
+    amountINR: suppliedBookedINR,
+  };
+} else if (suppliedRate !== null && suppliedRate > 0) {
+  fx = {
+    originalAmount: totalAmount,
+    originalCurrency: currency,
+    exchangeRate: suppliedRate,
+    rateDate: invoiceDate,
+    amountINR: parseFloat((totalAmount * suppliedRate).toFixed(2)),
+  };
+} else {
+  fx = await convertToINR(totalAmount, currency, invoiceDate);
+}    const fingerprint = await buildFingerprint(
       invoiceNumberNormalized, invoiceDate, totalAmount,
       vendorNameNormalized, customerNameNormalized
     );

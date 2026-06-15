@@ -108,7 +108,41 @@ function amountsEqual(a, b, tol = AMOUNT_TOLERANCE) {
 function fmt(n) {
   return `₹${Number(n).toLocaleString("en-IN", { maximumFractionDigits: 2 })}`;
 }
+function calcForexGainLoss(bankItem, docItem) {
+  // Only relevant if the document was originally in a foreign currency
+  const docCurrency = docItem.originalCurrency || docItem.currency || "INR";
+  if (!docCurrency || docCurrency === "INR") return null;
 
+  const docOriginalAmount = parseAmount(docItem.originalAmount ?? docItem.amount);
+  const docAmountINR      = parseAmount(docItem.amountINR ?? docItem.amount);
+  const docExchangeRate   = parseAmount(docItem.exchangeRate) || null;
+
+  const bankAmountINR = parseAmount(bankItem.amount); // bank is always INR
+  if (!docOriginalAmount || !docAmountINR) return null;
+
+  // Effective rate at which the bank actually settled, vs the rate recorded on the doc
+  const diff = parseFloat((bankAmountINR - docAmountINR).toFixed(2));
+  if (Math.abs(diff) <= AMOUNT_TOLERANCE) return null; // negligible, ignore
+
+  const type = diff > 0 ? "GAIN" : "LOSS";
+  // For a receivable (invoice/credit): receiving MORE INR than recorded = GAIN
+  // For a payable (expense/debit settled): paying MORE INR than recorded = LOSS
+  const isCredit = bankItem.direction === "credit";
+  const finalType = isCredit
+    ? (diff > 0 ? "GAIN" : "LOSS")
+    : (diff > 0 ? "LOSS" : "GAIN");
+
+  return {
+    originalCurrency: docCurrency,
+    originalAmount: docOriginalAmount,
+    docExchangeRate,
+    docAmountINR,
+    bankAmountINR,
+    forexGainLoss: parseFloat(Math.abs(diff).toFixed(2)),
+    forexGainLossType: finalType, // "GAIN" | "LOSS"
+    note: `${docCurrency} ${docOriginalAmount} recorded at ₹${docAmountINR} (rate ${docExchangeRate ?? "—"}), settled at ₹${bankAmountINR}. Forex ${finalType.toLowerCase()} of ${fmt(Math.abs(diff))}.`,
+  };
+}
 // ============================================================
 // TEXT UTILITIES
 // ============================================================
@@ -311,6 +345,10 @@ function normalize(bankRows, invoiceRows, payrollRows, expenseRows) {
     description: r.description ?? r["Service Description"],
     amount: parseAmount(r.total ?? r["Total (₹)"]),
     dueDate: r.dueDate ?? r["Due Date"],
+    originalAmount: r.originalAmount ?? r.amountINR ?? parseAmount(r.total ?? r["Total (₹)"]),
+    originalCurrency: r.originalCurrency ?? r.currency ?? "INR",
+    exchangeRate: r.exchangeRate ?? 1,
+    amountINR: r.amountINR ?? parseAmount(r.total ?? r["Total (₹)"]),
     _idx: i,
   }));
 
@@ -345,9 +383,12 @@ function normalize(bankRows, invoiceRows, payrollRows, expenseRows) {
     category: r.category ?? r["Category"],
     description: r.description ?? r["Description"],
     amount: parseAmount(r.amount ?? r["Amount (₹)"]),
+    originalAmount: r.originalAmount ?? r.amountINR ?? parseAmount(r.amount ?? r["Amount (₹)"]),
+    originalCurrency: r.originalCurrency ?? r.currency ?? "INR",
+    exchangeRate: r.exchangeRate ?? 1,
+    amountINR: r.amountINR ?? parseAmount(r.amount ?? r["Amount (₹)"]),
     _idx: i,
   }));
-
   return { bank, invoices, payroll, expenses };
 }
 
@@ -596,6 +637,10 @@ async function reconcile(bankRows, invoiceRows, payrollRows, expenseRows, opts =
       invItems.forEach((inv) => matchedInvoices.add(inv._idx));
       empItems.forEach((p) => matchedPayroll.add(p._idx));
 
+      const forexInfo = (bankItems.length === 1 && docItems.length === 1)
+        ? calcForexGainLoss(bankItems[0], docItems[0])
+        : null;
+
       matches.push({
         matchType,
         bankTransactions: bankItems,
@@ -604,10 +649,24 @@ async function reconcile(bankRows, invoiceRows, payrollRows, expenseRows, opts =
         explanation,
         suggestedCategory: invItems.length > 0 ? "REVENUE" : "PAYROLL",
         method: "reference_match",
+        forexGainLoss: forexInfo?.forexGainLoss ?? 0,
+        forexGainLossType: forexInfo?.forexGainLossType ?? "NONE",
+        forexNote: forexInfo?.note ?? "",
+        originalCurrency: forexInfo?.originalCurrency ?? "INR",
+        originalAmount: forexInfo?.originalAmount ?? 0,
+        exchangeRateUsed: forexInfo?.docExchangeRate ?? 1,
       });
+
+      if (forexInfo) {
+        anomalies.push({
+          type: "FOREX_" + forexInfo.forexGainLossType,
+          record: { docItems, bankItems },
+          message: forexInfo.note,
+          severity: "low",
+        });
+      }
     }
   }
-
   // ----------------------------------------------------------
   // STAGE 1b: Classify obviously-internal bank transactions BEFORE
   //           expense matching, so e.g. "Reimbursement – ... EMP002"
@@ -684,6 +743,9 @@ async function reconcile(bankRows, invoiceRows, payrollRows, expenseRows, opts =
       if (matchedExpenses.has(e._idx) || matchedBank.has(b._idx)) continue;
       matchedExpenses.add(e._idx);
       matchedBank.add(b._idx);
+
+      const forexInfo = calcForexGainLoss(b, e);
+
       matches.push({
         matchType: "one_to_one",
         bankTransactions: [b],
@@ -692,7 +754,22 @@ async function reconcile(bankRows, invoiceRows, payrollRows, expenseRows, opts =
         explanation: `${e.docId} (${e.name}, ${fmt(e.amount)}, ${e.date}) matches ${b.txnId} ("${b.description}", ${fmt(b.amount)}, ${b.date}) — same amount, close date, matching description.`,
         suggestedCategory: "EXPENSE",
         method: "fuzzy_match",
+        forexGainLoss: forexInfo?.forexGainLoss ?? 0,
+        forexGainLossType: forexInfo?.forexGainLossType ?? "NONE",
+        forexNote: forexInfo?.note ?? "",
+        originalCurrency: forexInfo?.originalCurrency ?? "INR",
+        originalAmount: forexInfo?.originalAmount ?? 0,
+        exchangeRateUsed: forexInfo?.docExchangeRate ?? 1,
       });
+
+      if (forexInfo) {
+        anomalies.push({
+          type: "FOREX_" + forexInfo.forexGainLossType,
+          record: { docItems: [e], bankItems: [b] },
+          message: forexInfo.note,
+          severity: "low",
+        });
+      }
     }
   }
 
@@ -762,9 +839,21 @@ async function reconcile(bankRows, invoiceRows, payrollRows, expenseRows, opts =
     let best = null, bestScore = -1;
     bank.forEach((b) => {
       if (matchedBank.has(b._idx)) return;
-      if (!amountsEqual(doc.amount, b.amount)) return;
+      // FIX: compare amount in INR (foreign-currency docs store local total in `amount`,
+      // but bank is always INR — compare against amountINR when available)
+      const docAmountForMatch = (doc.originalCurrency && doc.originalCurrency !== "INR")
+        ? doc.amountINR
+        : doc.amount;
+      if (!amountsEqual(docAmountForMatch, b.amount, Math.max(AMOUNT_TOLERANCE, docAmountForMatch * 0.02))) return;
+
       const dDiff = dateDiffDays(doc._date, b._date);
-      if (dDiff > DATE_WINDOW_DAYS_STRICT) return;
+      const sameMonth = doc._date && b._date
+        && doc._date.getFullYear() === b._date.getFullYear()
+        && doc._date.getMonth() === b._date.getMonth();
+
+      // FIX: widen window to LOOSE, and always allow same calendar month
+      if (dDiff > DATE_WINDOW_DAYS_LOOSE && !sameMonth) return;
+
       const score = 0.6 + textSimilarity(doc.name || doc.description, b.description) * 0.4;
       if (score > bestScore) {
         bestScore = score;
@@ -776,6 +865,8 @@ async function reconcile(bankRows, invoiceRows, payrollRows, expenseRows, opts =
       if (doc.docType === "INVOICE") matchedInvoices.add(doc._idx);
       else matchedPayroll.add(doc._idx);
 
+      const forexInfo = calcForexGainLoss(best, doc);
+
       matches.push({
         matchType: "one_to_one",
         bankTransactions: [best],
@@ -784,7 +875,22 @@ async function reconcile(bankRows, invoiceRows, payrollRows, expenseRows, opts =
         explanation: `${doc.docId} (${fmt(doc.amount)}, ${doc.date}) matches ${best.txnId} (${fmt(best.amount)}, ${best.date}) by amount, date and description similarity.`,
         suggestedCategory: doc.docType === "INVOICE" ? "REVENUE" : "PAYROLL",
         method: "amount_date_match",
+        forexGainLoss: forexInfo?.forexGainLoss ?? 0,
+        forexGainLossType: forexInfo?.forexGainLossType ?? "NONE",
+        forexNote: forexInfo?.note ?? "",
+        originalCurrency: forexInfo?.originalCurrency ?? "INR",
+        originalAmount: forexInfo?.originalAmount ?? 0,
+        exchangeRateUsed: forexInfo?.docExchangeRate ?? 1,
       });
+
+      if (forexInfo) {
+        anomalies.push({
+          type: "FOREX_" + forexInfo.forexGainLossType,
+          record: { docItems: [doc], bankItems: [best] },
+          message: forexInfo.note,
+          severity: "low",
+        });
+      }
     }
   });
 

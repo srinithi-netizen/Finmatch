@@ -121,6 +121,54 @@ async function ollamaMatchTransaction(bankTxn, candidates) {
       isMiscOnly: false,
     };
   }
+  const bankAmount = toFloat(bankTxn.amount);
+  const bankDate   = bankTxn.txnDate ?? bankTxn.transaction_date ?? bankTxn.date ?? "";
+  const bankDateObj = bankDate ? new Date(bankDate) : null;
+
+  const deterministicMatch = candidates.find((doc) => {
+    const docAmt = toFloat(getDocAmountINR(doc));
+    // amount within ₹5 or 2% (covers forex movement)
+    const amtTol = Math.max(5, docAmt * 0.02);
+    if (Math.abs(docAmt - bankAmount) > amtTol) return false;
+
+    const docDate = getDocDate(doc);
+    if (!docDate || !bankDateObj) return true; // amount-only match if no dates
+
+    const docDateObj = new Date(docDate);
+    if (isNaN(docDateObj.getTime()) || isNaN(bankDateObj.getTime())) return true;
+
+    const sameMonth = docDateObj.getFullYear() === bankDateObj.getFullYear()
+                    && docDateObj.getMonth() === bankDateObj.getMonth();
+    const dDiffDays = Math.abs((docDateObj - bankDateObj) / 86400000);
+
+    return sameMonth || dDiffDays <= 15;
+  });
+
+  if (deterministicMatch) {
+    const docAmt       = toFloat(getDocAmountINR(deterministicMatch));
+    const docRemaining = toFloat(deterministicMatch.remainingAmount ?? docAmt);
+    const matchedAmt   = Math.min(docRemaining, bankAmount);
+
+    return {
+      bankTxnId: bankTxn.$id,
+      matches: [{
+        sourceDocId:             deterministicMatch.$id,
+        sourceDocType:           deterministicMatch._docType,
+        matchedAmount:           matchedAmt,
+        remainingDocumentAmount: Math.max(0, docRemaining - matchedAmt),
+        confidence:              0.9,
+        confidenceBreakdown: {
+          amountMatch: 1, referenceMatch: 0, vendorMatch: 0.5, dateMatch: 0.9,
+          explanation: "Matched by amount and date proximity (deterministic, no AI needed)."
+        },
+        reason: "Matched by amount and date proximity (deterministic, no AI needed).",
+        currencyNote: null,
+        anomalies: [],
+      }],
+      anomalies: [],
+      isMiscOnly: false,
+    };
+  }
 
   const prompt = `
 You are a financial reconciliation assistant for an Indian accounting firm.
@@ -170,7 +218,6 @@ Respond ONLY with valid JSON — no markdown, no extra text:
     return { bankTxnId: bankTxn.$id, matches: [], anomalies: [], isMiscOnly: false };
   }
 
-  const bankAmount = toFloat(bankTxn.amount);
   const matches = parsed.selectedIndexes
     .map((idx) => candidates[idx])
     .filter(Boolean)
@@ -590,9 +637,15 @@ function ConfidenceBar({ score, breakdown, reason }) {
     </div>
   );
 }
-function ForexBadge({ doc, matchedAmount }) {
+function ForexBadge({ doc, matchedAmount, bankAmount }) {
   const [fx, setFx] = useState(null);
   const [loading, setLoading] = useState(false);
+
+  // FIX: forex gain/loss compares the doc's booked INR value against the
+  // *bank transaction's* settled INR amount — not the matched/allocated
+  // amount (which is capped at the doc's remaining balance and would
+  // always equal the booked amount, making diff always 0).
+  const settledAmount = bankAmount != null ? bankAmount : matchedAmount;
 
   useEffect(() => {
     if (!doc || !doc.originalCurrency || doc.originalCurrency === "INR") {
@@ -601,12 +654,12 @@ function ForexBadge({ doc, matchedAmount }) {
     }
     let cancelled = false;
     setLoading(true);
-    calculateForexForMatch(doc, toFloat(matchedAmount))
+    calculateForexForMatch(doc, toFloat(settledAmount))
       .then((r) => { if (!cancelled) setFx(r); })
       .catch(() => { if (!cancelled) setFx(null); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [doc?.$id, matchedAmount]);
+  }, [doc?.$id, settledAmount]);
 
   if (!doc || !doc.originalCurrency || doc.originalCurrency === "INR") return null;
   if (loading || !fx) {
@@ -1068,8 +1121,7 @@ setOllamaCoaSuggestions(newCoaSuggestions);
           let fxResult = null;
           if (doc.originalCurrency && doc.originalCurrency !== "INR") {
             try {
-              fxResult = await calculateForexForMatch(doc, matchedAmount);
-            } catch (fxErr) {
+fxResult = await calculateForexForMatch(doc, bankAmount);            } catch (fxErr) {
               console.warn("Forex calculation failed for doc", docId, fxErr.message);
             }
           }

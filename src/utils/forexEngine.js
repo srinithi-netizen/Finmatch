@@ -122,11 +122,14 @@ export async function calculateForexForMatch(sourceDoc, settledAmountINR) {
     bookedAmountINR = converted.amountINR;
   }
 
+  // FIX: fall back to _docType (used by ReconciliationCenter.jsx normalize)
+  const docType = sourceDoc.documentType || sourceDoc._docType;
+
   return calculateForexGainLoss({
     bookedAmountINR,
     settledAmountINR,
     originalCurrency,
     originalAmount,
-    documentType: sourceDoc.documentType,
+    documentType: docType,
   });
 }
