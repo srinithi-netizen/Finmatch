@@ -77,6 +77,7 @@ amountINR: "Amount (INR)",
 
 // Enum-style fields → render as a dropdown instead of free text
 const ENUM_OPTIONS = {
+  
   direction: ["CREDIT", "DEBIT"],
   paymentStatus: ["PAID", "UNPAID", "PARTIAL", "OVERDUE"],
   paymentMode: ["CASH", "CARD", "UPI", "BANK_TRANSFER", "CHEQUE", "OTHER"],

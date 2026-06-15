@@ -122,7 +122,8 @@ const [filterYear,  setFilterYear]  = useState(null);
       alert("No transactions extracted. Verify the file is a valid bank statement.");
       return;
     }
-    const { saved, skipped } = await storeBankTransactions(transactions);
+    console.log("DEBUG doc.month/year:", doc.month, doc.year, typeof doc.month, typeof doc.year);
+const { saved, skipped } = await storeBankTransactions(transactions, doc.month, doc.year);
 
     await logAudit({
       clientId,
@@ -155,8 +156,7 @@ const [filterYear,  setFilterYear]  = useState(null);
       alert("No invoices extracted. Verify the file is a valid invoice file.");
       return;
     }
-    const { saved, skipped } = await storeInvoices(invoices);
-
+const { saved, skipped } = await storeInvoices(invoices, doc.month, doc.year);
     await logAudit({
       clientId,
       entityType:  "uploaded_document",
@@ -187,8 +187,7 @@ const [filterYear,  setFilterYear]  = useState(null);
     alert("No payroll records extracted. Verify the file is a valid payroll report.");
     return;
   }
-  const { saved, skipped } = await storePayrollRecords(payrollRecords);
-
+const { saved, skipped } = await storePayrollRecords(payrollRecords, doc.month, doc.year);
   await logAudit({
     clientId,
     entityType:  "uploaded_document",
@@ -219,8 +218,7 @@ async function processSalesReportDoc(doc, file) {
     alert("No sale records extracted. Verify the file is a valid sales report.");
     return;
   }
-  const { saved, skipped } = await storeSaleRecords(saleRecords);
-
+const { saved, skipped } = await storeSaleRecords(saleRecords, doc.month, doc.year);
   await logAudit({
     clientId,
     entityType:  "uploaded_document",
@@ -287,7 +285,7 @@ async function processExpenseDoc(doc, file) {
     return;
   }
 
-  const { saved, skipped } = await storeExpenseRecords(expenses);
+const { saved, skipped } = await storeExpenseRecords(expenses, doc.month, doc.year);
 
   await logAudit({
     clientId,

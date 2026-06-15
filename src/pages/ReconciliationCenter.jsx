@@ -37,6 +37,15 @@ function getDocLabel(doc) {
     doc.name ?? doc.description ?? "—"
   );
 }
+// Returns the document's amount in INR for matching/remaining/forex purposes.
+// Foreign-currency docs store their booked INR value in amountINR.
+function getDocAmountINR(doc) {
+  if (!doc) return 0;
+  if (doc.originalCurrency && doc.originalCurrency !== "INR" && doc.amountINR != null) {
+    return toFloat(doc.amountINR);
+  }
+  return getDocAmount(doc);
+}
 
 function getDocDate(doc) {
   if (!doc) return null;
@@ -63,7 +72,7 @@ function getDocRef(doc) {
 
 function computeGroupTotals(bankTxn, checkedDocs) {
   const bankAmount    = toFloat(bankTxn?.amount ?? 0);
-  const selectedTotal = checkedDocs.reduce((s, d) => s + toFloat(d.remainingAmount ?? getDocAmount(d)), 0);
+  const selectedTotal = checkedDocs.reduce((s, d) => s + toFloat(d.remainingAmount ?? getDocAmountINR(d)), 0);
   return { bankAmount, selectedTotal, remaining: bankAmount - selectedTotal };
 }
 
@@ -166,7 +175,7 @@ Respond ONLY with valid JSON — no markdown, no extra text:
     .map((idx) => candidates[idx])
     .filter(Boolean)
     .map((doc) => {
-      const docAmt       = toFloat(getDocAmount(doc));
+      const docAmt       = toFloat(getDocAmountINR(doc));
       const docRemaining = toFloat(doc.remainingAmount ?? docAmt);
       const matchedAmt   = Math.min(docRemaining, bankAmount);
       return {
@@ -208,7 +217,7 @@ async function runReconciliation({ bankTransactions, sourceDocs, onProgress }) {
     // and whose amount is within 50% of txn amount
     const txnAmt = toFloat(txn.amount);
     const candidates = sourceDocs.filter((doc) => {
-      const docAmt = toFloat(getDocAmount(doc));
+      const docAmt = toFloat(getDocAmountINR(doc));
       if (docAmt <= 0) return false;
       // amount within 50% or ₹500 whichever is larger
       const tol = Math.max(txnAmt * 0.5, 500);
@@ -928,7 +937,7 @@ export default function ReconciliationCenter() {
     const checkedDocs = [...checkedDocIds].map((id) => {
       const m   = activeSuggestions.find((mm) => mm.sourceDocId === id);
       const doc = getSourceDoc(id);
-      return { ...doc, remainingAmount: m ? toFloat(m.matchedAmount) : toFloat(doc?.remainingAmount ?? getDocAmount(doc)) };
+      return { ...doc, remainingAmount: m ? toFloat(m.matchedAmount) : toFloat(doc?.remainingAmount ?? getDocAmountINR(doc)) };
     }).filter(Boolean);
     return computeGroupTotals(selectedTxn, checkedDocs);
   }, [selectedTxn, checkedDocIds, activeSuggestions, sourceDocs]); // eslint-disable-line
@@ -1045,7 +1054,7 @@ setOllamaCoaSuggestions(newCoaSuggestions);
           const suggestion    = activeSuggestions.find((m) => m.sourceDocId === docId);
           const doc           = getSourceDoc(docId);
           if (!doc) continue;
-          const docRemaining  = toFloat(doc.remainingAmount ?? getDocAmount(doc));
+          const docRemaining  = toFloat(doc.remainingAmount ?? getDocAmountINR(doc));
           const bankRemaining = toFloat(selectedTxn.remainingAmount ?? selectedTxn.amount);
           const matchedAmount = suggestion ? toFloat(suggestion.matchedAmount) : Math.min(docRemaining, bankRemaining);
           totalMatchedAmount += matchedAmount;
@@ -1201,7 +1210,7 @@ setOllamaCoaSuggestions(newCoaSuggestions);
     if (!doc) return;
     setAL("add_manual");
     try {
-      const docRemaining  = toFloat(doc.remainingAmount ?? getDocAmount(doc));
+      const docRemaining  = toFloat(doc.remainingAmount ?? getDocAmountINR(doc));
       const bankRemaining = toFloat(selectedTxn.remainingAmount ?? selectedTxn.amount);
       const matchedAmount = Math.min(docRemaining, bankRemaining);
       setPendingSuggestions((prev) => {
@@ -1548,16 +1557,17 @@ setOllamaCoaSuggestions(newCoaSuggestions);
                             className="flex-1 text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white min-w-0">
                             <option value="">— select {manualAddType} —</option>
                             {(pendingDocsByType[manualAddType] ?? []).map((doc) => {
-                              const docDate  = getDocDate(doc) ? fmtDate(getDocDate(doc)) : "⚠ no date";
-                              const docAmt   = fmt(doc.remainingAmount ?? getDocAmount(doc), doc.currency);
-                              const ref      = getDocRef(doc) ?? "";
-                              const lbl      = getDocLabel(doc);
-                              return (
-                                <option key={doc.$id} value={doc.$id}>
-                                  {ref ? `[${ref}] ` : ""}{lbl} · {docAmt} · {docDate}
-                                </option>
-                              );
-                            })}
+  const docDate     = getDocDate(doc) ? fmtDate(getDocDate(doc)) : "⚠ no date";
+  const remCurrency = (doc.originalCurrency && doc.originalCurrency !== "INR") ? "INR" : doc.currency;
+  const docAmt      = fmt(doc.remainingAmount ?? getDocAmountINR(doc), remCurrency);
+  const ref         = getDocRef(doc) ?? "";
+  const lbl         = getDocLabel(doc);
+  return (
+    <option key={doc.$id} value={doc.$id}>
+      {ref ? `[${ref}] ` : ""}{lbl} · {docAmt} · {docDate}
+    </option>
+  );
+})}
                           </select>
                           <button onClick={handleAddManualSuggestion} disabled={!manualAddDocId || actionLoading === "add_manual"}
                             className="px-3 py-1.5 bg-violet-600 hover:bg-violet-700 text-white text-xs font-medium rounded-lg disabled:opacity-40 whitespace-nowrap">

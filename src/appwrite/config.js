@@ -391,8 +391,8 @@ export async function writeAuditLog(entry) {
 // ─── Expense Records ──────────────────────────────────────────────────────────
 export const EXPENSE_COLLECTION_ID = "expense_records";
 
-export async function storeExpenseRecords(expenses) {
-  if (!expenses || expenses.length === 0) return { saved: 0, skipped: 0 };
+export async function storeExpenseRecords(expenses, docMonth = null, docYear = null) {
+    if (!expenses || expenses.length === 0) return { saved: 0, skipped: 0 };
 
   const clientId = expenses[0].clientId;
   const existingFingerprints = new Set();
@@ -416,13 +416,13 @@ export async function storeExpenseRecords(expenses) {
       skipped++;
       continue;
     }
-    try {
-const { month, year } = getMonthYear(record.expenseDate ?? record.expense_date);
+   try {
       await databases.createDocument(DB_ID, EXPENSE_COLLECTION_ID, ID.unique(), {
         ...record,
-        month: month ?? 0,
-        year:  year  ?? 0,
-      });      saved++;
+        month: docMonth ?? 0,
+        year:  docYear  ?? 0,
+      });
+      saved++;
     } catch (err) {
       console.error("storeExpenseRecords: failed row", record.expenseRowIndex, err.message);
     }
@@ -577,8 +577,8 @@ export async function logValidationErrors({
 
 // ─── Bank Transactions ────────────────────────────────────────────────────────
 
-export async function storeBankTransactions(transactions) {
-  if (!transactions || transactions.length === 0) return { saved: 0, skipped: 0 };
+export async function storeBankTransactions(transactions, docMonth = null, docYear = null) {
+    if (!transactions || transactions.length === 0) return { saved: 0, skipped: 0 };
 
   const clientId = transactions[0].clientId;
   const existingFingerprints = new Set();
@@ -603,15 +603,14 @@ export async function storeBankTransactions(transactions) {
       continue;
     }
     try {
-      const { month, year } = getMonthYear(txn.txnDate ?? txn.transaction_date ?? txn.date);
       await databases.createDocument(DB_ID, BANK_TRANSACTIONS_COLLECTION_ID, ID.unique(), {
         ...txn,
-        month: month ?? 0,
-        year:  year  ?? 0,
+        month: docMonth ?? 0,
+        year:  docYear  ?? 0,
       });
       saved++;
-    } catch (err) {
-      console.error("storeBankTransactions: failed row", txn.bankRowIndex, err.message);
+    }  catch (err) {
+      console.error("storeBankTransactions: failed row", txn.bankRowIndex, err.message, err);
     }
   }
 
@@ -641,8 +640,8 @@ export async function getBankTransactions(clientId, month = null, year = null) {
 
 // ─── Invoices ─────────────────────────────────────────────────────────────────
 
-export async function storeInvoices(invoices) {
-  if (!invoices || invoices.length === 0) return { saved: 0, skipped: 0 };
+export async function storeInvoices(invoices, docMonth = null, docYear = null) {
+    if (!invoices || invoices.length === 0) return { saved: 0, skipped: 0 };
 
   const clientId = invoices[0].clientId;
   const existingFingerprints = new Set();
@@ -667,12 +666,12 @@ export async function storeInvoices(invoices) {
       continue;
     }
     try {
-const { month, year } = getMonthYear(inv.invoiceDate ?? inv.invoice_date);
       await databases.createDocument(DB_ID, INVOICES_COLLECTION_ID, ID.unique(), {
         ...inv,
-        month: month ?? 0,
-        year:  year  ?? 0,
-      });      saved++;
+        month: docMonth ?? 0,
+        year:  docYear  ?? 0,
+      });
+      saved++;
     } catch (err) {
       console.error("storeInvoices: failed row", inv.invoiceRowIndex, err.message);
     }
@@ -704,8 +703,8 @@ export async function getInvoices(clientId, month = null, year = null) {
 
 // ─── Payroll Records ──────────────────────────────────────────────────────────
 
-export async function storePayrollRecords(payrollRecords) {
-  if (!payrollRecords || payrollRecords.length === 0) return { saved: 0, skipped: 0 };
+export async function storePayrollRecords(payrollRecords, docMonth = null, docYear = null) {
+    if (!payrollRecords || payrollRecords.length === 0) return { saved: 0, skipped: 0 };
 
   const clientId = payrollRecords[0].clientId;
   const existingFingerprints = new Set();
@@ -729,13 +728,13 @@ export async function storePayrollRecords(payrollRecords) {
       skipped++;
       continue;
     }
-    try {
-const { month, year } = getMonthYear(record.payDate ?? record.pay_date);
+   try {
       await databases.createDocument(DB_ID, PAYROLL_COLLECTION_ID, ID.unique(), {
         ...record,
-        month: month ?? 0,
-        year:  year  ?? 0,
-      });      saved++;
+        month: docMonth ?? 0,
+        year:  docYear  ?? 0,
+      });
+      saved++;
     } catch (err) {
       console.error("storePayrollRecords: failed row", record.payrollRowIndex, err.message);
     }
@@ -766,8 +765,8 @@ export async function getPayrollRecords(clientId, month = null, year = null) {
 }
 // ─── Sale Records ─────────────────────────────────────────────────────────────
 
-export async function storeSaleRecords(saleRecords) {
-  if (!saleRecords || saleRecords.length === 0) return { saved: 0, skipped: 0 };
+export async function storeSaleRecords(saleRecords, docMonth = null, docYear = null) {
+    if (!saleRecords || saleRecords.length === 0) return { saved: 0, skipped: 0 };
 
   const clientId = saleRecords[0].clientId;
   const existingFingerprints = new Set();
@@ -791,13 +790,13 @@ export async function storeSaleRecords(saleRecords) {
       skipped++;
       continue;
     }
-    try {
-const { month, year } = getMonthYear(record.saleDate ?? record.sale_date);
+  try {
       await databases.createDocument(DB_ID, SALES_COLLECTION_ID, ID.unique(), {
         ...record,
-        month: month ?? 0,
-        year:  year  ?? 0,
-      });      saved++;
+        month: docMonth ?? 0,
+        year:  docYear  ?? 0,
+      });
+      saved++;
     } catch (err) {
       console.error("storeSaleRecords: failed row", record.saleRowIndex, err.message);
     }
