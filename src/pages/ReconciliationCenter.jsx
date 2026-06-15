@@ -1578,7 +1578,7 @@ fxResult = await calculateForexForMatch(doc, bankAmount);            } catch (fx
                                   <>
                                     <DocInfoCard doc={doc} matchedAmount={m.matchedAmount} remainingDocAmount={toFloat(m.remainingDocAmount ?? m.remainingDocumentAmount)} currency={selectedTxn.currency} />
                                     {!isMiscEntry && <ConfidenceBar score={m.confidenceScore} breakdown={m.confidenceBreakdown} reason={m.matchReason} />}
-                                    {!isMiscEntry && <ForexBadge doc={doc} matchedAmount={m.matchedAmount} />}
+{!isMiscEntry && <ForexBadge doc={doc} matchedAmount={m.matchedAmount} bankAmount={toFloat(selectedTxn.amount)} />}
                                   </>
                                 )}
                                 {m.currencyNote && !isMiscEntry && <p style={{ fontSize: "11px", color: "#f97316", marginTop: "4px" }}>⚠ {m.currencyNote}</p>}
@@ -1793,8 +1793,7 @@ fxResult = await calculateForexForMatch(doc, bankAmount);            } catch (fx
                           </div>
                           <DocInfoCard doc={doc} matchedAmount={m?.matchedAmount} remainingDocAmount={remaining} currency={selectedTxn.currency} />
                           {m && !isMiscExp && <ConfidenceBar score={m.confidenceScore} breakdown={m.confidenceBreakdown} reason={m.matchReason} />}
-                          {!isMiscExp && <ForexBadge doc={doc} matchedAmount={m?.matchedAmount} />}
-                        </div>
+{!isMiscExp && <ForexBadge doc={doc} matchedAmount={m?.matchedAmount} bankAmount={toFloat(selectedTxn.amount)} />}                        </div>
                       );
                     })()}
                   </>
